@@ -8,8 +8,9 @@ import { config } from "dotenv";
 
 import { GoogleGenAI } from "@google/genai";
 
-// Load environment variables from .env.local file
-config({ path: '.env.local' });
+// Load environment variables
+config(); // Load .env
+config({ path: '.env.local' }); // Overlay .env.local if available
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,9 +36,16 @@ function getS3Client() {
     const region = process.env.AWS_REGION;
     const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
     const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+    const bucket = process.env.AWS_S3_BUCKET_NAME;
 
-    if (!region || !accessKeyId || !secretAccessKey) {
-      console.warn("AWS S3 credentials missing. S3 features will be disabled.");
+    if (!region || !accessKeyId || !secretAccessKey || !bucket) {
+      const missing = [];
+      if (!region) missing.push("AWS_REGION");
+      if (!accessKeyId) missing.push("AWS_ACCESS_KEY_ID");
+      if (!secretAccessKey) missing.push("AWS_SECRET_ACCESS_KEY");
+      if (!bucket) missing.push("AWS_S3_BUCKET_NAME");
+      
+      console.warn(`AWS S3 configuration incomplete. Missing: ${missing.join(", ")}. S3 features will be disabled.`);
       return null;
     }
 
@@ -62,6 +70,12 @@ async function startServer() {
   // Health check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", s3Configured: !!getS3Client() });
+  });
+
+  // Global API Logger to help debugging
+  app.use("/api", (req, res, next) => {
+    console.log(`[API] ${req.method} ${req.path}`, req.query);
+    next();
   });
 
   // API route to save generated images
@@ -117,18 +131,18 @@ async function startServer() {
 
   // S3 List Route (to sync state)
   app.get("/api/s3/list", async (req, res) => {
-    const { prefix } = req.query;
-    const client = getS3Client();
-    const bucket = process.env.AWS_S3_BUCKET_NAME;
-
-    if (!client || !bucket) {
-      return res.status(503).json({ error: "S3 service not configured" });
-    }
-
     try {
+      const { prefix } = req.query;
+      const client = getS3Client();
+      const bucket = process.env.AWS_S3_BUCKET_NAME;
+
+      if (!client || !bucket) {
+        return res.status(503).json({ error: "S3 service not configured", prefix });
+      }
+
       const command = new ListObjectsV2Command({
         Bucket: bucket,
-        Prefix: prefix as string,
+        Prefix: (prefix as string) || '',
       });
 
       const response = await client.send(command);
@@ -137,10 +151,15 @@ async function startServer() {
         url: `/api/s3/get?key=${encodeURIComponent(item.Key || '')}`
       })) || [];
 
+      res.setHeader('Content-Type', 'application/json');
       res.json({ success: true, items });
-    } catch (error) {
+    } catch (error: any) {
       console.error("S3 List failed:", error);
-      res.status(500).json({ error: "S3 list failed" });
+      res.status(500).json({ 
+        error: "S3 list failed", 
+        message: error.message,
+        code: error.code || error.name
+      });
     }
   });
 
@@ -459,6 +478,41 @@ async function startServer() {
     } catch (error) {
       console.error("ElevenLabs TTS failed:", error);
       res.status(500).json({ error: "ElevenLabs TTS failed" });
+    }
+  });
+
+  // ElevenLabs Get Voices Proxy
+  app.get("/api/tts/elevenlabs/voices", async (req, res) => {
+    const rawApiKey = process.env.ELEVENLABS_API_KEY;
+    const apiKey = rawApiKey?.trim();
+
+    if (!apiKey) {
+      return res.status(503).json({ 
+        error: "ElevenLabs API key not configured",
+        message: "Please set ELEVENLABS_API_KEY in your environment variables or Secrets panel."
+      });
+    }
+
+    try {
+      const response = await fetch("https://api.elevenlabs.io/v1/voices", {
+        headers: {
+          'xi-api-key': apiKey,
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        return res.status(response.status).json({ 
+          error: "Failed to fetch voices from ElevenLabs",
+          message: errorData.detail?.message || "Unknown error"
+        });
+      }
+
+      const data = await response.json();
+      res.json(data);
+    } catch (error) {
+      console.error("ElevenLabs Get Voices failed:", error);
+      res.status(500).json({ error: "Failed to connect to ElevenLabs API" });
     }
   });
 

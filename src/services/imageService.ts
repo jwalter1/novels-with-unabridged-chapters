@@ -31,14 +31,14 @@ export async function generateImage(prompt: string, options: { aspectRatio?: "1:
   }
 }
 
-export async function uploadToS3(key: string, base64Data: string): Promise<string> {
+export async function uploadToS3(key: string, base64Data: string, contentType: string = 'image/png'): Promise<string> {
   const res = await fetch('/api/s3/upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       key,
       base64Data,
-      contentType: 'image/png'
+      contentType
     })
   });
 
@@ -75,4 +75,22 @@ export async function deleteS3Object(key: string): Promise<boolean> {
     throw new Error(errorData.error || 'Failed to delete from S3');
   }
   return true;
+}
+
+export async function uploadMetadata(key: string, data: any): Promise<string> {
+  const jsonStr = JSON.stringify(data);
+  // Using btoa(unescape(encodeURIComponent(str))) for UTF-8 support
+  const base64 = btoa(unescape(encodeURIComponent(jsonStr)));
+  return uploadToS3(key, base64, 'application/json');
+}
+
+export async function getS3Metadata(key: string): Promise<any | null> {
+  try {
+    const res = await fetch(`/api/s3/get?key=${encodeURIComponent(key)}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (error) {
+    console.error("Failed to fetch metadata:", error);
+    return null;
+  }
 }

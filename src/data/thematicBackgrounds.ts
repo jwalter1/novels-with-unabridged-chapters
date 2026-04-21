@@ -80,5 +80,42 @@ export const NOVEL_THEMES: Record<string, Record<string, string>> = {
     garden: "/api/s3/get?key=backgrounds%2Ffallbacks%2Falice-wonderland%2Fgarden.png",
     courtroom: "/api/s3/get?key=backgrounds%2Ffallbacks%2Falice-wonderland%2Fcourtroom.png",
     default: "/api/s3/get?key=backgrounds%2Ffallbacks%2Falice-wonderland%2Fdefault.png"
+  },
+  'romeo-juliet': {
+    verona_square: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fverona_square.png",
+    verona_street: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fverona_street.png",
+    verona_street_dusk: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fverona_street_dusk.png",
+    capulet_house_interior: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fcapulet_house_interior.png",
+    capulet_ball: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fcapulet_ball.png",
+    capulet_garden: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fcapulet_garden.png",
+    friar_cell: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Ffriar_cell.png",
+    juliet_chamber: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fjuliet_chamber.png",
+    mantua_street: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fmantua_street.png",
+    capulet_tomb: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fcapulet_tomb.png",
+    default: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fdefault.png"
+  },
+  '1984': {
+    apartment_interior: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fapartment_interior.png",
+    telescreen_wall: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Ftelescreen_wall.png",
+    victory_mansions: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fvictory_mansions.png",
+    ministry_of_truth: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fministry_of_truth.png",
+    london_ruins: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Flondon_ruins.png",
+    canteen: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fcanteen.png",
+    charrington_shop: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fcharrington_shop.png",
+    golden_country: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fgolden_country.png",
+    room_101: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Froom_101.png",
+    chestnut_tree_cafe: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fchestnut_tree_cafe.png",
+    default: "/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fdefault.png"
+  },
+  'crime-punishment': {
+    st_petersburg_street: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fst_petersburg_street.png",
+    raskolnikov_garret: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fraskolnikov_garret.png",
+    pawnbroker_apartment: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fpawnbroker_apartment.png",
+    tavern: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Ftavern.png",
+    neva_river: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fneva_river.png",
+    sonia_room: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fsonia_room.png",
+    police_station: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fpolice_station.png",
+    siberian_exile: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fsiberian_exile.png",
+    default: "/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fdefault.png"
   }
 };

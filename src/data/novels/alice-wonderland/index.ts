@@ -1,9 +1,9 @@
-import { unabridgedChapters as chapters } from './chapters';
+import { unabridgedChapters } from './unabridged_chapters';
 import { abridgedChapters } from './abridgedChapters';
 import { characters } from './characters';
 
 export const aliceData = {
-  chapters,
+  chapters: unabridgedChapters,
   abridgedChapters,
   characters
 };

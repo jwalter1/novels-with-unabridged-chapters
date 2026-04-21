@@ -4,7 +4,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { Loader2, Sparkles, CheckCircle, AlertCircle, Trash2, Image as ImageIcon, Plus, RefreshCw, Upload, Terminal, Save, X, Users, Mic, BookOpen, Download } from 'lucide-react';
-import { generateImage, uploadToS3, checkS3Exists, listS3Objects, deleteS3Object } from '../services/imageService';
+import { generateImage, uploadToS3, uploadMetadata, getS3Metadata, checkS3Exists, listS3Objects, deleteS3Object } from '../services/imageService';
 import { saveNovelPromptConfig, loadNovelPromptConfig, saveScenePromptConfig, loadScenePromptConfig } from '../services/promptsService';
 import { saveNovelVoiceConfig, loadNovelVoiceConfig } from '../services/voiceService';
 import { clearVoiceConfigCache, generateSpeech, playAudio, ELEVENLABS_VOICES } from '../services/ttsService';
@@ -13,15 +13,19 @@ import { saveImportedNovel } from '../services/novelService';
 import { NOVEL_THEMES } from '../data/thematicBackgrounds';
 import { NOVELS_METADATA } from '../data/bookData';
 import { getNovelData } from '../data/bookData';
+import { auth, User } from '../firebase';
 import { Novel, Scene, NovelMetadata, Chapter } from '../types';
 
 type Tab = 'generate' | 'browse' | 'prompts' | 'sprites' | 'voices' | 'import';
 
 interface AdminPanelProps {
   novels?: NovelMetadata[];
+  user: User | null;
 }
 
-export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
+export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) {
+  const isAdmin = user?.email === 'jwalter1@gmail.com';
+
   const [activeTab, setActiveTab] = useState<Tab>('generate');
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState<{key: string, status: 'pending' | 'success' | 'error' | 'skipped', message?: string}[]>([]);
@@ -54,6 +58,11 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
   const [importLog, setImportLog] = useState<string[]>([]);
   const [importProgress, setImportProgress] = useState(0);
   const [importedNovel, setImportedNovel] = useState<Novel | null>(null);
+  
+  // Metadata view
+  const [selectedAssetMetadata, setSelectedAssetMetadata] = useState<any | null>(null);
+  const [isFetchingMetadata, setIsFetchingMetadata] = useState(false);
+  const [metadataViewKey, setMetadataViewKey] = useState<string | null>(null);
 
   const addImportLog = (msg: string) => setImportLog(prev => [...prev.slice(-100), `${new Date().toLocaleTimeString()} - ${msg}`]);
 
@@ -75,17 +84,25 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
   const activeBackgroundUrl = useMemo(() => {
     if (!selectedSceneData) return null;
     
-    // Check overrides
+    // Check for scene-specific overrides in S3 first
     const override = assets.find(a => a.key.includes(`/scenes/${selectedSceneData.id}_`));
     if (override) return override.url;
 
-    // Check fallbacks
-    const fallback = assets.find(a => a.key === `backgrounds/fallbacks/${novelId}/${selectedSceneData.background}.png`);
+    // If the background already looks like a processed S3 URL or external URL, use it
+    if (selectedSceneData.background.includes('/api/s3/') || selectedSceneData.background.startsWith('http')) {
+      return selectedSceneData.background;
+    }
+
+    // Otherwise, handle it as a category key and look for fallbacks
+    const category = selectedSceneData.background.split('/').pop()?.replace('.png', '') || selectedSceneData.background;
+    
+    // Check manual S3 fallbacks
+    const fallback = assets.find(a => a.key === `backgrounds/fallbacks/${novelId}/${category}.png`);
     if (fallback) return fallback.url;
 
-    // Static theme mapping
+    // Check static theme mapping
     const theme = NOVEL_THEMES[novelId];
-    if (theme && theme[selectedSceneData.background]) return theme[selectedSceneData.background];
+    if (theme && theme[category]) return theme[category];
 
     return null;
   }, [selectedSceneData, assets, novelId]);
@@ -135,10 +152,11 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
       const items = await listS3Objects(`novels/${novelId}/`);
       const fallbackItems = await listS3Objects(`backgrounds/fallbacks/${novelId}/`);
       
-      // Filter out non-image assets (like voice files)
+      // Filter out non-image assets and exclude sprites (which have their own tab)
       const imageExtensions = ['.png', '.jpg', '.jpeg', '.webp'];
       const filteredItems = [...items, ...fallbackItems].filter(item => 
-        imageExtensions.some(ext => item.key.toLowerCase().endsWith(ext))
+        imageExtensions.some(ext => item.key.toLowerCase().endsWith(ext)) && 
+        !item.key.includes('/sprites/')
       );
       
       setAssets(filteredItems);
@@ -333,16 +351,24 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
       if (assetKey.includes('/fallbacks/')) {
         const parts = assetKey.split('/');
         const filename = parts[parts.length - 1].replace('.png', '').replace(/_/g, ' ');
-        prompt = `A cinematic scene from ${novelTitle}: ${filename}. ${stylePrompt}`;
+        prompt = `A cinematic empty background scene (no characters) from ${novelTitle}: ${filename}. ${stylePrompt}`;
       } else {
         // For custom/manual ones, use filename as hint
         const filename = assetKey.split('/').pop()?.split('_').pop()?.replace('.png', '').replace(/_/g, ' ') || "a background scene";
-        prompt = `A cinematic scene from ${novelTitle}: ${filename}. ${stylePrompt}`;
+        prompt = `A cinematic empty background scene (no characters) from ${novelTitle}: ${filename}. ${stylePrompt}`;
       }
 
       console.log(`Regenerating ${assetKey} with prompt:`, prompt);
       const base64 = await generateImage(prompt);
       await uploadToS3(assetKey, base64);
+      
+      // Save prompt metadata
+      try {
+        const metaKey = assetKey.replace('.png', '.json');
+        await uploadMetadata(metaKey, { prompt, generatedAt: new Date().toISOString(), novelId });
+      } catch (e) {
+        console.warn("Failed to save prompt metadata:", e);
+      }
       
       // Force refresh the image in the UI by appending a cache buster or re-fetching
       await fetchAssets();
@@ -391,9 +417,18 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
 
       while (retries > 0 && !success) {
         try {
-          const prompt = `A cinematic scene from ${novelTitle}: ${key.replace(/_/g, ' ')}. ${stylePrompt}`;
+          const prompt = `A cinematic empty background scene (no characters) from ${novelTitle}: ${key.replace(/_/g, ' ')}. ${stylePrompt}`;
           const base64 = await generateImage(prompt);
           await uploadToS3(s3Path, base64);
+          
+          // Save prompt metadata
+          try {
+            const metaKey = s3Path.replace('.png', '.json');
+            await uploadMetadata(metaKey, { prompt, generatedAt: new Date().toISOString(), novelId });
+          } catch (e) {
+            console.warn("Failed to save fallback prompt metadata:", e);
+          }
+
           setResults(prev => prev.map(r => r.key === key ? { ...r, status: 'success' } : r));
           success = true;
         } catch (error: any) {
@@ -418,12 +453,44 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
   };
 
   const handleDeleteAsset = async (key: string) => {
-    if (!confirm(`Are you sure you want to delete ${key}?`)) return;
+    if (!confirm(`Are you sure you want to delete this asset?`)) return;
     try {
+      console.log(`Deleting asset and associated metadata: ${key}`);
       await deleteS3Object(key);
+      
+      // Also attempt to delete metadata if it's a PNG
+      if (key.endsWith('.png')) {
+        const metaKey = key.replace('.png', '.json');
+        try {
+          await deleteS3Object(metaKey);
+        } catch (e) {
+          // Metadata might not exist, ignore
+        }
+      }
+
       setAssets(prev => prev.filter(a => a.key !== key));
+      setSprites(prev => prev.filter(a => a.key !== key));
+      
+      // Refresh version to clear caches
+      setAssetVersion(prev => prev + 1);
+    } catch (error: any) {
+      console.error("Failed to delete asset:", error);
+      alert(`Failed to delete asset: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleViewMetadata = async (assetKey: string) => {
+    const metaKey = assetKey.replace('.png', '.json');
+    setIsFetchingMetadata(true);
+    setMetadataViewKey(assetKey);
+    try {
+      const data = await getS3Metadata(metaKey);
+      setSelectedAssetMetadata(data);
     } catch (error) {
-      alert("Failed to delete asset");
+      console.warn("No metadata found for this asset");
+      setSelectedAssetMetadata(null);
+    } finally {
+      setIsFetchingMetadata(false);
     }
   };
 
@@ -473,6 +540,15 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
         try {
           const base64 = await generateImage(prompt, { aspectRatio: "3:4" });
           await uploadToS3(s3Path, base64);
+
+          // Save prompt metadata
+          try {
+            const metaKey = s3Path.replace('.png', '.json');
+            await uploadMetadata(metaKey, { prompt, generatedAt: new Date().toISOString(), novelId, charId });
+          } catch (e) {
+            console.warn("Failed to save sprite prompt metadata:", e);
+          }
+
           setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'success' } : r));
           success = true;
         } catch (error: any) {
@@ -601,13 +677,35 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
     }
   };
 
+  if (!isAdmin) {
+    return (
+      <Card className="bg-white border-[#d4c5b0] shadow-2xl max-w-4xl mx-auto my-10 min-h-[400px] flex flex-col items-center justify-center p-12 text-center">
+        <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mb-6">
+          <AlertCircle className="w-8 h-8" />
+        </div>
+        <h2 className="text-2xl font-serif font-bold mb-4">Unauthorized Access</h2>
+        <p className="text-gray-600 mb-8 max-w-md">
+          You do not have permission to access the Asset Generation Admin panel. 
+          Please log in as an administrator to manage novel assets, characters, and settings.
+        </p>
+        <Button 
+          variant="outline" 
+          className="rounded-full px-8 h-10 border-[#8b7355] text-[#8b7355] hover:bg-[#8b7355] hover:text-white"
+          onClick={() => window.location.reload()}
+        >
+          Return to Library
+        </Button>
+      </Card>
+    );
+  }
+
   return (
     <Card className="bg-white border-[#d4c5b0] shadow-2xl max-w-4xl mx-auto my-10 min-h-[600px] flex flex-col overflow-hidden">
       {/* Tab Navigation */}
       <div className="flex border-b border-[#d4c5b0] bg-[#f5f0e5] overflow-x-auto custom-scrollbar">
         {[
           { id: 'generate', label: 'Assets', icon: Sparkles },
-          { id: 'browse', label: 'Manage', icon: ImageIcon },
+          { id: 'browse', label: 'Backgrounds', icon: ImageIcon },
           { id: 'sprites', label: 'Sprites', icon: Users },
           { id: 'voices', label: 'Voices', icon: Mic },
           { id: 'import', label: 'Import', icon: BookOpen },
@@ -633,7 +731,7 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
           <div>
             <h2 className="text-2xl font-bold font-serif text-[#2c241a] flex items-center gap-2">
               {activeTab === 'generate' ? <Sparkles className="w-6 h-6 text-amber-500" /> : activeTab === 'browse' ? <ImageIcon className="w-6 h-6 text-blue-500" /> : activeTab === 'sprites' ? <Users className="w-6 h-6 text-green-600" /> : activeTab === 'voices' ? <Mic className="w-6 h-6 text-red-500" /> : activeTab === 'import' ? <BookOpen className="w-6 h-6 text-[#8b7355]" /> : <Terminal className="w-6 h-6 text-purple-500" />}
-              {activeTab === 'generate' ? 'Asset Generation' : activeTab === 'browse' ? 'Asset Management' : activeTab === 'sprites' ? 'Character Sprites' : activeTab === 'voices' ? 'Voice assignments' : activeTab === 'import' ? 'Import New Book' : 'AI Prompt Settings'}
+              {activeTab === 'generate' ? 'Asset Generation' : activeTab === 'browse' ? 'Background Management' : activeTab === 'sprites' ? 'Character Sprites' : activeTab === 'voices' ? 'Voice assignments' : activeTab === 'import' ? 'Import New Book' : 'AI Prompt Settings'}
             </h2>
             <p className="text-sm text-gray-500 mt-1">
               {activeTab === 'import' ? 'Extract book from Project Gutenberg' : `Configuring assets for novel`}
@@ -772,6 +870,13 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
                           </div>
                         </div>
                         <div className="absolute bottom-2 right-2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleViewMetadata(asset.key); }}
+                            className="bg-blue-500 text-white p-1.5 hover:bg-blue-600 shadow-lg"
+                            title="View AI Prompt"
+                          >
+                            <Terminal className="w-3.5 h-3.5" />
+                          </button>
                           <button 
                             onClick={() => handleRegenerateAsset(asset.key)}
                             disabled={regeneratingKeys[asset.key]}
@@ -993,7 +1098,17 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
                             className="w-full h-full object-contain p-2 hover:scale-105 transition-transform duration-500"
                             referrerPolicy="no-referrer"
                           />
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-end justify-start p-2">
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-end justify-start p-2 gap-2">
+                             <button 
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 handleViewMetadata(sprite.key);
+                               }}
+                               className="bg-blue-500 text-white p-1.5 hover:bg-blue-600 shadow-lg"
+                               title="View AI Prompt"
+                             >
+                               <Terminal className="w-3.5 h-3.5" />
+                             </button>
                              <button 
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1216,7 +1331,7 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
 
                     <div className="pt-2 border-t border-gray-50">
                       <p className="text-[10px] text-gray-500 leading-relaxed uppercase font-bold tracking-tighter">
-                        Location: {selectedSceneData.background.replace(/_/g, ' ')}
+                        Location: {(selectedSceneData.background.includes('/api/s3/') ? selectedSceneData.background.split('%2F').pop()?.replace('.png', '') : selectedSceneData.background)?.replace(/_/g, ' ')}
                       </p>
                       <p className="text-[10px] text-gray-500 leading-relaxed uppercase font-bold tracking-tighter">
                         Chapter: {selectedSceneData.chapterTitle}
@@ -1260,6 +1375,72 @@ export function AdminPanel({ novels = NOVELS_METADATA }: AdminPanelProps) {
           </div>
         )}
       </div>
+
+      {/* Metadata Detail Overlay */}
+      <AnimatePresence>
+        {metadataViewKey && (
+          <motion.div 
+            initial={{ opacity: 0, y: 100 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 100 }}
+            className="fixed bottom-0 left-0 right-0 z-[200] bg-white border-t border-[#d4c5b0] shadow-[0_-10px_30px_rgba(0,0,0,0.1)] p-6"
+          >
+            <div className="max-w-4xl mx-auto flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded flex items-center justify-center">
+                    <Terminal className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold uppercase tracking-widest text-[#8b7355]">AI Generation Metadata</h4>
+                    <p className="text-[10px] text-gray-500 font-mono truncate max-w-[400px]">{metadataViewKey}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => { setMetadataViewKey(null); setSelectedAssetMetadata(null); }}
+                  className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="bg-[#fdfbf7] border border-[#d4c5b0] p-4 rounded min-h-[100px] relative">
+                {isFetchingMetadata ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-white/60">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#8b7355]" />
+                  </div>
+                ) : selectedAssetMetadata ? (
+                  <div className="space-y-4">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-gray-400 block mb-1">AI Prompt</span>
+                      <p className="text-sm font-serif leading-relaxed text-[#4a3f35] italic">
+                        "{selectedAssetMetadata.prompt}"
+                      </p>
+                    </div>
+                    <div className="flex gap-10">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Generated At</span>
+                        <span className="text-xs font-mono">{new Date(selectedAssetMetadata.generatedAt).toLocaleString()}</span>
+                      </div>
+                      {selectedAssetMetadata.charId && (
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Character ID</span>
+                          <span className="text-xs font-mono">{selectedAssetMetadata.charId}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-4 text-gray-400 italic">
+                    <AlertCircle className="w-8 h-8 mb-2 opacity-20" />
+                    <p className="text-sm">No recorded metadata found for this asset.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Image Lightbox */}
       <AnimatePresence>

@@ -118,24 +118,32 @@ export function NovelLanding({
 
           {/* Login/User Info */}
           <div className="flex items-center gap-3">
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              className="bg-white/10 text-white border-white/20 backdrop-blur-md hover:bg-white/20 rounded-full w-8 h-8 md:w-10 md:h-10 flex items-center justify-center transition-all hover:scale-110 shrink-0" 
-              onClick={onOpenAdmin} 
-              title="Asset Generation Admin"
-            >
-              <Sparkles className="w-3.5 h-3.5 md:w-4 md:h-4" />
-            </Button>
+            {user?.email === 'jwalter1@gmail.com' && (
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="bg-white/10 text-white border-white/20 backdrop-blur-md hover:bg-white/20 rounded-full w-8 h-8 md:w-10 md:h-10 flex items-center justify-center transition-all hover:scale-110 shrink-0" 
+                onClick={onOpenAdmin} 
+                title="Asset Generation Admin"
+              >
+                <Sparkles className="w-3.5 h-3.5 md:w-4 md:h-4" />
+              </Button>
+            )}
 
             {user ? (
               <div className="flex items-center gap-2 md:gap-3 bg-white/10 backdrop-blur-md p-1 pr-3 md:p-1.5 md:pr-4 rounded-full border border-white/10 h-8 md:h-10">
-                <img 
-                  src={user.photoURL || ''} 
-                  alt={user.displayName || ''} 
-                  className="w-6 h-6 md:w-8 md:h-8 rounded-full border border-white/20 shrink-0 object-cover" 
-                  referrerPolicy="no-referrer" 
-                />
+                {user.photoURL ? (
+                  <img 
+                    src={user.photoURL} 
+                    alt={user.displayName || ''} 
+                    className="w-6 h-6 md:w-8 md:h-8 rounded-full border border-white/20 shrink-0 object-cover" 
+                    referrerPolicy="no-referrer" 
+                  />
+                ) : (
+                  <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-white/10 flex items-center justify-center text-white/40 text-[10px] shrink-0 border border-white/10">
+                    {user.displayName?.charAt(0) || 'U'}
+                  </div>
+                )}
                 <div className="flex flex-col justify-center">
                   <span className="text-[9px] md:text-[10px] font-medium text-white/90 leading-none mb-0.5 md:mb-1 truncate max-w-[80px] md:max-w-[120px]">{user.displayName}</span>
                   <button 
@@ -232,7 +240,7 @@ export function NovelLanding({
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
           {sortedNovels.map((novel, index) => {
-            const isAvailable = ['great-gatsby', 'pride-prejudice', 'the-trial', 'aesop-fables', 'animal-farm', 'alice-wonderland'].includes(novel.id);
+            const isAvailable = ['great-gatsby', 'pride-prejudice', 'the-trial', 'aesop-fables', 'animal-farm', 'alice-wonderland', 'romeo-juliet'].includes(novel.id);
             const isPinned = pinnedNovelIds.includes(novel.id);
             
             return (
@@ -366,11 +374,16 @@ export function NovelLanding({
 
       <ReadSummaryModal 
         isOpen={isSummaryOpen} 
-        onClose={() => setIsSummaryOpen(false)} 
+        onClose={() => {
+          setIsSummaryOpen(false);
+          setTotalPagesRead(getTotalPagesRead());
+        }} 
         onJumpTo={(id, version, chIdx, scIdx) => {
           onJumpTo?.(id, version, chIdx, scIdx);
           setIsSummaryOpen(false);
+          setTotalPagesRead(getTotalPagesRead());
         }}
+        user={user}
       />
     </div>
   );

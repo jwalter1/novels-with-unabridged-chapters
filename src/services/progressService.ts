@@ -1,4 +1,5 @@
 import { db, doc, setDoc, getDoc, handleFirestoreError, OperationType } from '../firebase';
+import { NOVELS_METADATA } from '../data/novels/metadata';
 
 export interface ProgressData {
   sceneProgress: Record<string, number>; // key: "chapterIndex:sceneIndex", value: maxDialogueIndexReached
@@ -7,6 +8,7 @@ export interface ProgressData {
     sceneIndex: number;
     dialogueIndex: number;
   };
+  updatedAt?: string;
 }
 
 const PROGRESS_PREFIX = 'novel_progress_v3_';
@@ -36,8 +38,9 @@ export function updateProgress(novelId: string, chapterIndex: number, sceneIndex
     changed = true;
   }
   
-  // Always update last position
+  // Always update last position and timestamp
   progress.lastPosition = { chapterIndex, sceneIndex, dialogueIndex };
+  progress.updatedAt = new Date().toISOString();
   changed = true;
 
   if (changed) {
@@ -76,7 +79,8 @@ export async function loadProgressFromCloud(uid: string, novelId: string, versio
       const localProgress = getProgress(novelId, version);
       const mergedProgress: ProgressData = {
         sceneProgress: { ...localProgress.sceneProgress },
-        lastPosition: cloudProgress.lastPosition || localProgress.lastPosition
+        lastPosition: cloudProgress.lastPosition || localProgress.lastPosition,
+        updatedAt: cloudProgress.updatedAt || localProgress.updatedAt
       };
       
       Object.entries(cloudProgress.sceneProgress).forEach(([key, val]) => {
@@ -137,23 +141,37 @@ export function resetProgress(novelId: string, uid?: string, version?: string) {
 
 export function getTotalPagesRead(): number {
   let total = 0;
+  
+  // We should only count progress for books that actually exist in our metadata
+  // to stay in sync with the Reading Odyssey archive
+  NOVELS_METADATA.forEach(metadata => {
+    ['abridged', 'unabridged'].forEach(version => {
+      const progress = getProgress(metadata.id, version);
+      if (progress && progress.sceneProgress) {
+        Object.values(progress.sceneProgress).forEach(maxIndex => {
+          total += (maxIndex + 1);
+        });
+      }
+    });
+  });
+  
+  return total;
+}
+
+export function resetAllProgress(uid?: string) {
+  // Clear all known metadata progress
+  NOVELS_METADATA.forEach(metadata => {
+    ['abridged', 'unabridged'].forEach(version => {
+      resetProgress(metadata.id, uid, version);
+    });
+  });
+  
+  // Also scan for any orphan keys with our prefix and clear them
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (key && key.startsWith(PROGRESS_PREFIX)) {
-      try {
-        const saved = localStorage.getItem(key);
-        if (saved) {
-          const progress: ProgressData = JSON.parse(saved);
-          if (progress && progress.sceneProgress) {
-            Object.values(progress.sceneProgress).forEach(maxIndex => {
-              total += (maxIndex + 1);
-            });
-          }
-        }
-      } catch (e) {
-        // Ignore parse errors for individual items
-      }
+      localStorage.removeItem(key);
+      i--; // Adjust index after removal
     }
   }
-  return total;
 }

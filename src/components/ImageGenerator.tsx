@@ -8,38 +8,38 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 export const BACKGROUND_CATEGORIES: Record<string, Record<string, string>> = {
   'great-gatsby': {
-    gatsby_mansion: "A cinematic scene from The Great Gatsby, showing the grand exterior of Gatsby's mansion at night with glowing windows and a sense of mystery, 1920s style.",
-    buchanan_estate: "A cinematic scene from The Great Gatsby, showing the elegant East Egg estate of the Buchanans, white curtains fluttering in the breeze, 1920s style.",
-    valley_of_ashes_scene: "A cinematic scene from The Great Gatsby, showing the desolate valley of ashes with the fading billboard of Doctor T.J. Eckleburg, 1920s style.",
-    new_york_city_1920s: "A cinematic scene from The Great Gatsby, showing a bustling New York City street in the 1920s, vintage cars, and vibrant energy.",
-    long_island_dock: "A cinematic scene from The Great Gatsby, showing a lonely dock at night with a single green light shining in the distance across the water."
+    gatsby_mansion: "A cinematic empty background scene (no characters) from The Great Gatsby, showing the grand exterior of Gatsby's mansion at night with glowing windows and a sense of mystery, 1920s style.",
+    buchanan_estate: "A cinematic empty background scene (no characters) from The Great Gatsby, showing the elegant East Egg estate of the Buchanans, white curtains fluttering in the breeze, 1920s style.",
+    valley_of_ashes_scene: "A cinematic empty background scene (no characters) from The Great Gatsby, showing the desolate valley of ashes with the fading billboard of Doctor T.J. Eckleburg, 1920s style.",
+    new_york_city_1920s: "A cinematic empty background scene (no characters) from The Great Gatsby, showing a bustling New York City street in the 1920s, vintage cars, and vibrant energy.",
+    long_island_dock: "A cinematic empty background scene (no characters) from The Great Gatsby, showing a lonely dock at night with a single green light shining in the distance across the water."
   },
   'pride-prejudice': {
-    longbourn_estate: "A cinematic scene from Pride and Prejudice, showing the charming Longbourn estate in the English countryside, rolling green hills, early 19th century style.",
-    netherfield_park: "A cinematic scene from Pride and Prejudice, showing the grand Netherfield Park mansion, elegant architecture, horse-drawn carriages, Regency era.",
-    meryton_village: "A cinematic scene from Pride and Prejudice, showing the bustling village of Meryton with red-coated officers and townspeople, 19th century England.",
-    pemberley_exterior: "A cinematic scene from Pride and Prejudice, showing the magnificent Pemberley estate, a large stone building with a beautiful lake in front, Regency style.",
-    ballroom_scene: "A cinematic scene from Pride and Prejudice, showing a crowded ballroom with people in Regency attire dancing under chandeliers, elegant atmosphere."
+    longbourn_estate: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the charming Longbourn estate in the English countryside, rolling green hills, early 19th century style.",
+    netherfield_park: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the grand Netherfield Park mansion, elegant architecture, horse-drawn carriages, Regency era.",
+    meryton_village: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the bustling village of Meryton with townspeople in the distance, 19th century England.",
+    pemberley_exterior: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the magnificent Pemberley estate, a large stone building with a beautiful lake in front, Regency style.",
+    ballroom_scene: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing a grand empty ballroom with Regency decor, chandeliers, elegant atmosphere."
   },
   'animal-farm': {
-    barn: "A large, rustic barn interior at night, straw on the floor, dim lanterns overhead, sense of solemn gathering.",
-    farm_yard: "Manor Farm yard, a collection of old buildings, tools scattered around, rustic and earthy farm aesthetic.",
-    hayfield: "A sunny hayfield with golden hay being harvested by animals, dramatic sky, social realism style.",
-    battlefield: "The Battle of the Cowshed, animals defending a gate against humans, chaotic and heroic atmosphere.",
-    windmill: "A grand windmill sitting atop a hill against a turbulent sky, majestic and symbolic.",
-    farmhouse: "The exterior of the Manor house, looking slightly neglected, brick walls, traditional English farm architecture.",
-    pigs_humans: "A climactic scene in a dining room where pigs and humans are sitting together, dim light, shifting shadows, haunting resemblance.",
-    default: "A panoramic view of Manor Farm, rolling hills, orchard, and far off buildings under a dramatic sky."
+    barn: "A large, rustic empty barn interior background at night, straw on the floor, dim lanterns overhead, sense of solemn space.",
+    farm_yard: "Manor Farm yard background, a collection of old buildings, tools scattered around, rustic and earthy farm aesthetic, no animals clearly visible.",
+    hayfield: "A sunny empty hayfield background with golden hay, dramatic sky, social realism style, no characters.",
+    battlefield: "The Cowshed battlefield background, a gate and fences under a stormy sky, chaotic atmosphere, no characters.",
+    windmill: "A grand windmill background sitting atop a hill against a turbulent sky, majestic and symbolic.",
+    farmhouse: "The exterior background of the Manor house, looking slightly neglected, brick walls, traditional English farm architecture.",
+    pigs_humans: "A cinematic empty dining room background, dim light, shifting shadows, eerie atmosphere.",
+    default: "A panoramic empty background view of Manor Farm, rolling hills, orchard, and far off buildings under a dramatic sky."
   },
   'alice-wonderland': {
-    riverbank: "A serene 19 Victorian era riverbank, lush green grass, a gentle river flowing, idyllic English countryside afternoon, cinematic lighting, whimsical atmosphere.",
-    rabbit_hole: "A deep, mysterious rabbit hole well, the sides filled with cupboards and bookshelves, maps and pictures hanging on pegs, looking down into darkness, whimsical and surreal.",
-    hall_of_doors: "A long, low hall lit by a row of lamps hanging from the roof, many locked doors of all sizes all around the wood-paneled walls, Victorian aesthetic.",
-    pool_of_tears: "A large hall filled with a deep pool of salt water, ripples in the water, dim mysterious lighting, surreal proportions.",
-    tea_party: "A long table set out under a tree in front of a house, the March Hare and the Hatter having tea, many tea sets, large tree, whimsical garden setting.",
-    garden: "The loveliest garden imaginable, bright flower beds, cool fountains, vibrant colors, seen through a tiny door, dreamlike Victorian garden.",
-    courtroom: "A grand, whimsical courtroom filled with playing cards as jurors and officers, King and Queen of Hearts on a throne, surreal and colorful.",
-    default: "A whimsical, dreamlike landscape of Wonderland, odd-shaped trees, vibrant colors, floating elements, surreal Victorian fantasy style."
+    riverbank: "A serene empty riverbank background, lush green grass, a gentle river flowing, idyllic English countryside afternoon, cinematic lighting, whimsical atmosphere.",
+    rabbit_hole: "A deep, mysterious rabbit hole background well, the sides filled with cupboards and bookshelves, whimsical and surreal.",
+    hall_of_doors: "A long, low hall background lit by lamps, many locked doors of all sizes all around the wood-paneled walls, Victorian aesthetic.",
+    pool_of_tears: "A large hall background filled with a pool of water, ripples, dim mysterious lighting, surreal proportions.",
+    tea_party: "An empty long tea table background set out under a tree in front of a house, many tea sets, whimsical garden setting.",
+    garden: "The loveliest empty garden background imaginable, bright flower beds, cool fountains, vibrant colors, dreamlike Victorian garden.",
+    courtroom: "A grand, whimsical empty courtroom background with card-themed patterns, surreal and colorful.",
+    default: "A whimsical, dreamlike empty landscape background of Wonderland, odd-shaped trees, vibrant colors, floating elements."
   }
 };
 

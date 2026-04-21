@@ -126,14 +126,10 @@ export async function generateSpeech(text: string, characterId?: string, voiceOv
     const tone = CHARACTER_TONES[charId] || "neutral";
     
     // Create a unique cache key based on text, character, and voice
-    // If customVoiceId is provided, we should probably bypass cache or use it in the key
-    const cacheKey = customVoiceId 
-      ? `custom:${customVoiceId}:${hashString(text)}`
-      : `${novelId || 'global'}:${charId}:${voiceName}:${text}`;
+    const cacheKey = `${novelId || 'global'}:${charId}:${voiceName}:${text}`;
     
-    const docId = customVoiceId 
-      ? `custom_${customVoiceId}_${hashString(text)}`
-      : `${charId}_${voiceName}_${hashString(text)}`;
+    // Stable docId independent of the specific custom voice ID string
+    const docId = `${charId}_${voiceName}_${hashString(text)}`;
 
     const prefix = novelId ? `novels/${novelId}/audio/` : 'audio/';
     const s3Key = `${prefix}${docId}.pcm`;
@@ -367,9 +363,12 @@ export function pauseAudio() {
 }
 
 export function resumeAudio() {
-  if (sharedAudioElement) {
+  if (sharedAudioElement && sharedAudioElement.src && sharedAudioElement.src !== window.location.href) {
     sharedAudioElement.play().catch(err => {
-      console.error("Failed to resume audio:", err);
+      // Ignore "The element has no supported sources." if we intended to just ignore it
+      if (err.name !== 'NotSupportedError' && !err.message?.includes('no supported sources')) {
+        console.error("Failed to resume audio:", err);
+      }
     });
   }
 }

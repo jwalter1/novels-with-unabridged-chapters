@@ -4,6 +4,7 @@ import { trialData } from './novels/the-trial';
 import { aesopData } from './novels/aesop';
 import { animalFarmData } from './novels/animal-farm';
 import { aliceData } from './novels/alice-wonderland/index';
+import { romeoJulietData } from './novels/romeo-juliet';
 import { BookVersion, Novel } from '../types';
 import { NOVELS_METADATA as BASE_METADATA } from './novels/metadata';
 import { loadImportedNovel } from '../services/novelService';
@@ -31,6 +32,9 @@ export async function getNovelData(id: string, version: BookVersion = 'abridged'
         break;
       case 'alice-wonderland':
         baseData = aliceData;
+        break;
+      case 'romeo-juliet':
+        baseData = romeoJulietData;
         break;
     }
   }

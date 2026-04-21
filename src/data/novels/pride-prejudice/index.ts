@@ -1,9 +1,9 @@
-import { chapters } from './unabridged_chapters';
 import { abridgedChapters } from './abridgedChapters';
 import { characters } from './characters';
+import { chapters as unabridgedChapters } from './unabridged_chapters';
 
 export const pridePrejudiceData = {
-  chapters,
+  chapters: unabridgedChapters,
   abridgedChapters,
   characters
 };

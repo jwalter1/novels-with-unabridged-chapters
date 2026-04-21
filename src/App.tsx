@@ -1,13 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef, Component, ReactNode } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Component, ReactNode, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronRight, ChevronLeft, BookOpen, Clock, User as UserIcon, Settings, Volume2, Sparkles, Loader2, Home, VolumeX, Hash, ChevronDown, Bookmark as BookmarkIcon, Trash2, History, Image as ImageIcon, RefreshCw, Pause, Play, Menu, Pin, X, Eye, EyeOff, Check } from 'lucide-react';
+import { ChevronRight, ChevronLeft, BookOpen, Clock, User as UserIcon, Settings, Volume2, Sparkles, Loader2, Home, VolumeX, Hash, ChevronDown, Bookmark as BookmarkIcon, Trash2, History, Image as ImageIcon, RefreshCw, Pause, Play, Menu, Pin, X, Eye, EyeOff, Check, Mic } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { GoogleGenAI } from "@google/genai";
-import { generateSpeech, playAudio, stopAudio, unlockAudio, hashString, pauseAudio, resumeAudio } from './services/ttsService';
+import { generateSpeech, playAudio, stopAudio, unlockAudio, hashString, pauseAudio, resumeAudio, ELEVENLABS_VOICES } from './services/ttsService';
 import { ImageGenerator, BACKGROUND_CATEGORIES } from './components/ImageGenerator';
 import { getFromCache, saveToCache, getBookmarks, saveBookmark, deleteBookmark, Bookmark, getSpriteHistory, saveSpriteHistory, getAllFromStore, syncBookmarksFromCloud } from './services/cacheService';
 import { NovelLanding } from './components/NovelLanding';
@@ -22,6 +22,8 @@ import { auth, signInWithPopup, signOut, onAuthStateChanged, googleProvider, Use
 import { LogIn, LogOut } from 'lucide-react';
 import { syncSettingsToCloud, loadSettingsFromCloud, UserSettings, syncGlobalSettingsToCloud, loadGlobalSettingsFromCloud } from './services/settingsService';
 import { saveNovelPromptConfig, loadNovelPromptConfig, loadAllNovelPromptConfigs } from './services/promptsService';
+import { saveNovelVoiceConfig, loadNovelVoiceConfig } from './services/voiceService';
+import { clearVoiceConfigCache } from './services/ttsService';
 
 import { listImportedNovels } from './services/novelService';
 
@@ -43,6 +45,12 @@ export default function App() {
   const [isBookmarksOpen, setIsBookmarksOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isVoiceSettingsOpen, setIsVoiceSettingsOpen] = useState(false);
+  const [isCharVoiceSelectorOpen, setIsCharVoiceSelectorOpen] = useState(false);
+  const [selectedCharForVoice, setSelectedCharForVoice] = useState<{ id: string, name: string } | null>(null);
+  const [voiceIdOverrides, setVoiceIdOverrides] = useState<Record<string, string>>({});
+  const [voiceOverrides, setVoiceOverrides] = useState<Record<string, VoiceName>>({});
+  const [elevenLabsVoices, setElevenLabsVoices] = useState<any[]>([]);
+  const [isFetchingVoices, setIsFetchingVoices] = useState(false);
   const [isProgressOpen, setIsProgressOpen] = useState(false);
   const [isBackgroundSelectorOpen, setIsBackgroundSelectorOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
@@ -116,11 +124,21 @@ export default function App() {
           setPageBackgroundHistory({});
           setBackgroundOverrides({});
           setSpriteOverrides({});
+          // Only clear if we don't have voice config yet (it will be loaded below)
           setGeneratedSprites({});
           setSpriteHistory({});
           setGlobalSceneBackgrounds({});
           
           setNovel(data);
+          
+          // Load novel-wide voice mappings
+          const voiceConfig = await loadNovelVoiceConfig(selectedNovelId);
+          if (voiceConfig?.voiceMappings) {
+            setVoiceIdOverrides(prev => ({ ...voiceConfig.voiceMappings }));
+          } else {
+            setVoiceIdOverrides({});
+          }
+
           setIsMenuOpen(true); // Ensure menu is open for the new novel
         } catch (error) {
           console.error("Failed to load novel:", error);
@@ -209,6 +227,7 @@ export default function App() {
             if (cloudSettings.isAutoAdvance !== undefined) setIsAutoAdvance(cloudSettings.isAutoAdvance);
             if (cloudSettings.autoAdvanceDelay !== undefined) setAutoAdvanceDelay(cloudSettings.autoAdvanceDelay);
             if (cloudSettings.voiceOverrides !== undefined) setVoiceOverrides(cloudSettings.voiceOverrides as Record<string, VoiceName>);
+            if (cloudSettings.voiceIdOverrides !== undefined) setVoiceIdOverrides(cloudSettings.voiceIdOverrides);
             if (cloudSettings.sceneBackgroundOverrides !== undefined) setSceneBackgroundOverrides(cloudSettings.sceneBackgroundOverrides);
             if (cloudSettings.sceneImageOverrides !== undefined) setSceneImageOverrides(cloudSettings.sceneImageOverrides);
             if (cloudSettings.pageImageOverrides !== undefined) setPageImageOverrides(cloudSettings.pageImageOverrides);
@@ -249,15 +268,6 @@ export default function App() {
       console.error('Logout failed:', error);
     }
   };
-
-  const [voiceOverrides, setVoiceOverrides] = useState<Record<string, VoiceName>>(() => {
-    const saved = localStorage.getItem('voiceOverrides');
-    return saved ? JSON.parse(saved) : {};
-  });
-
-  useEffect(() => {
-    localStorage.setItem('voiceOverrides', JSON.stringify(voiceOverrides));
-  }, [voiceOverrides]);
 
   useEffect(() => {
     if (novel) {
@@ -464,12 +474,16 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('isAutoAdvance', isAutoAdvance.toString());
+    if (!isAutoAdvance) {
+      setIsManualPaused(false);
+    }
   }, [isAutoAdvance]);
 
   useEffect(() => {
     localStorage.setItem('autoAdvanceDelay', autoAdvanceDelay.toString());
   }, [autoAdvanceDelay]);
   const [isScenePaused, setIsScenePaused] = useState(false);
+  const [isManualPaused, setIsManualPaused] = useState(false);
   const [isTextOverflowing, setIsTextOverflowing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [history, setHistory] = useState<{ chapter: number; scene: number; dialogue: number }[]>([]);
@@ -504,6 +518,14 @@ export default function App() {
       const so = localStorage.getItem(`spriteOverrides_${selectedNovelId}`);
       if (so) setSpriteOverrides(JSON.parse(so));
       else setSpriteOverrides({});
+
+      const vo = localStorage.getItem(`voiceOverrides_${selectedNovelId}`);
+      if (vo) setVoiceOverrides(JSON.parse(vo));
+      else setVoiceOverrides({});
+
+      const vio = localStorage.getItem(`voiceIdOverrides_${selectedNovelId}`);
+      if (vio) setVoiceIdOverrides(JSON.parse(vio));
+      else setVoiceIdOverrides({});
     };
     
     loadLocalSettings();
@@ -539,6 +561,61 @@ export default function App() {
     }
   }, [spriteOverrides, selectedNovelId]);
 
+  // Auto-migrate base64 sprites to S3 to keep settings small and stay under Firestore 1MB limit
+  useEffect(() => {
+    if (!selectedNovelId) return;
+    
+    const migrateBase64 = async () => {
+      let hasChanged = false;
+      const newOverrides = { ...spriteOverrides };
+      
+      for (const [charId, img] of Object.entries(spriteOverrides)) {
+        if (img && typeof img === 'string' && img.startsWith('data:')) {
+          const base64Data = img.split(',')[1];
+          // Basic validation check - if it's too small it's probably not a real image or already handled
+          if (base64Data.length < 100) continue; 
+
+          try {
+            const res = await fetch('/api/s3/upload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                key: `novels/${selectedNovelId}/sprites/${charId}.png`,
+                base64Data,
+                contentType: 'image/png'
+              })
+            });
+            if (res.ok) {
+              const data = await res.json();
+              newOverrides[charId] = data.url;
+              hasChanged = true;
+            }
+          } catch (e) {
+            console.error(`Failed to auto-migrate sprite for ${charId}:`, e);
+          }
+        }
+      }
+      
+      if (hasChanged) {
+        setSpriteOverrides(newOverrides);
+      }
+    };
+    
+    migrateBase64();
+  }, [spriteOverrides, selectedNovelId]);
+
+  useEffect(() => {
+    if (selectedNovelId) {
+      localStorage.setItem(`voiceOverrides_${selectedNovelId}`, JSON.stringify(voiceOverrides));
+    }
+  }, [voiceOverrides, selectedNovelId]);
+
+  useEffect(() => {
+    if (selectedNovelId) {
+      localStorage.setItem(`voiceIdOverrides_${selectedNovelId}`, JSON.stringify(voiceIdOverrides));
+    }
+  }, [voiceIdOverrides, selectedNovelId]);
+
   useEffect(() => {
     if (user && isGlobalSettingsLoaded) {
       syncGlobalSettingsToCloud(user.uid, { pinnedNovelIds });
@@ -554,6 +631,7 @@ export default function App() {
         isAutoAdvance,
         autoAdvanceDelay,
         voiceOverrides,
+        voiceIdOverrides,
         sceneBackgroundOverrides,
         sceneImageOverrides,
         pageImageOverrides,
@@ -562,7 +640,21 @@ export default function App() {
       };
       syncSettingsToCloud(user.uid, selectedNovelId, settings);
     }
-  }, [user, readingSpeed, isAudioEnabled, isAutoAdvance, autoAdvanceDelay, voiceOverrides, sceneBackgroundOverrides, sceneImageOverrides, pageImageOverrides, backgroundOverrides, spriteOverrides]);
+  }, [user, readingSpeed, isAudioEnabled, isAutoAdvance, autoAdvanceDelay, voiceOverrides, voiceIdOverrides, sceneBackgroundOverrides, sceneImageOverrides, pageImageOverrides, backgroundOverrides, spriteOverrides]);
+
+  useEffect(() => {
+    if (user?.email === 'jwalter1@gmail.com' && selectedNovelId && Object.keys(voiceIdOverrides).length > 0) {
+      const saveToNovel = async () => {
+        await saveNovelVoiceConfig({
+          novelId: selectedNovelId,
+          voiceMappings: voiceIdOverrides,
+          updatedAt: new Date().toISOString()
+        });
+        clearVoiceConfigCache(selectedNovelId);
+      };
+      saveToNovel();
+    }
+  }, [user, voiceIdOverrides, selectedNovelId]);
   
   // State for AI generated sprites
   const [generatedSprites, setGeneratedSprites] = useState<Record<string, string>>({});
@@ -590,8 +682,15 @@ export default function App() {
 
     try {
       // 1. Load Category Backgrounds
-      const bgResponse = await fetch(`/api/s3/list?prefix=novels/${id}/backgrounds/`);
+      const prefix = `novels/${id}/backgrounds/`;
+      const bgResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(prefix)}`);
       if (bgResponse.ok) {
+        const contentType = bgResponse.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          const text = await bgResponse.text();
+          console.error("Non-JSON response from S3 list (backgrounds):", text.slice(0, 200));
+          return;
+        }
         const data = await bgResponse.json();
         if (data.success) {
           const overrides: Record<string, string> = {};
@@ -604,25 +703,23 @@ export default function App() {
       }
 
       // 2. Load Scene-specific Backgrounds
-      const sceneResponse = await fetch(`/api/s3/list?prefix=novels/${id}/scenes/`);
+      const scenePrefix = `novels/${id}/scenes/`;
+      const sceneResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(scenePrefix)}`);
       if (sceneResponse.ok) {
-        const data = await sceneResponse.json();
-        if (data.success) {
-          const sceneOverrides: Record<string, string> = {};
-          // Sort items by key (which includes timestamp) to ensure most recent is used if multiple exist
-          const sortedItems = [...data.items].sort((a, b) => a.key.localeCompare(b.key));
-          
-          sortedItems.forEach((item: any) => {
-            const filename = item.key.split('/').pop();
-            if (filename && filename.includes('_')) {
-              const sceneId = filename.split('_')[0];
-              sceneOverrides[sceneId] = item.url;
-            }
-          });
-          
-          if (Object.keys(sceneOverrides).length > 0) {
-            // Only update if it's still for the same novel
-            if (id === selectedNovelId) {
+        const contentType = sceneResponse.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await sceneResponse.json();
+          if (data.success) {
+            const sceneOverrides: Record<string, string> = {};
+            const sortedItems = [...data.items].sort((a, b) => a.key.localeCompare(b.key));
+            sortedItems.forEach((item: any) => {
+              const filename = item.key.split('/').pop();
+              if (filename && filename.includes('_')) {
+                const sceneId = filename.split('_')[0];
+                sceneOverrides[sceneId] = item.url;
+              }
+            });
+            if (Object.keys(sceneOverrides).length > 0 && id === selectedNovelId) {
               setSceneImageOverrides(prev => ({ ...prev, ...sceneOverrides }));
             }
           }
@@ -630,42 +727,34 @@ export default function App() {
       }
 
       // 3. Load Page-specific Backgrounds
-      const pageResponse = await fetch(`/api/s3/list?prefix=novels/${id}/pages/`);
+      const pagePrefix = `novels/${id}/pages/`;
+      const pageResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(pagePrefix)}`);
       if (pageResponse.ok) {
-        const data = await pageResponse.json();
-        if (data.success) {
-          const pageOverrides: Record<string, string> = {};
-          const historyMap: Record<string, string[]> = {};
-          
-          // Sort items descending so the newest is first in the arrays
-          const sortedItems = [...data.items].sort((a, b) => b.key.localeCompare(a.key));
-          
-          sortedItems.forEach((item: any) => {
-            const filename = item.key.split('/').pop();
-            if (filename && filename.includes('_')) {
-              const parts = filename.split('_');
-              if (parts.length >= 2) {
-                const sceneId = parts[0];
-                const pageIndex = parts[1].replace('.png', '');
-                const key = `${sceneId}_${pageIndex}`;
-                
-                // Store in history
-                if (!historyMap[sceneId]) historyMap[sceneId] = [];
-                historyMap[sceneId].push(item.url);
-                
-                // Only write the active override if it hasn't been set yet (since newest is first)
-                if (!pageOverrides[key]) {
-                  pageOverrides[key] = item.url;
+        const contentType = pageResponse.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await pageResponse.json();
+          if (data.success) {
+            const pageOverrides: Record<string, string> = {};
+            const historyMap: Record<string, string[]> = {};
+            const sortedItems = [...data.items].sort((a, b) => a.key.localeCompare(b.key));
+            sortedItems.forEach((item: any) => {
+              const filename = item.key.split('/').pop();
+              if (filename && filename.includes('_')) {
+                const parts = filename.split('_');
+                if (parts.length >= 2) {
+                  const sceneId = parts[0];
+                  const pageIndex = parts[1].replace('.png', '');
+                  const key = `${sceneId}_${pageIndex}`;
+                  if (!historyMap[sceneId]) historyMap[sceneId] = [];
+                  historyMap[sceneId].push(item.url);
+                  if (!pageOverrides[key]) pageOverrides[key] = item.url;
                 }
               }
+            });
+            if (id === selectedNovelId) {
+              if (Object.keys(pageOverrides).length > 0) setPageImageOverrides(prev => ({ ...prev, ...pageOverrides }));
+              setPageBackgroundHistory(historyMap);
             }
-          });
-          
-          if (id === selectedNovelId) {
-            if (Object.keys(pageOverrides).length > 0) {
-              setPageImageOverrides(prev => ({ ...prev, ...pageOverrides }));
-            }
-            setPageBackgroundHistory(historyMap);
           }
         }
       }
@@ -680,8 +769,15 @@ export default function App() {
 
     try {
       console.log(`Syncing character sprites from S3 for ${id}...`);
-      const spriteResponse = await fetch(`/api/s3/list?prefix=novels/${id}/sprites/`);
+      const prefix = `novels/${id}/sprites/`;
+      const spriteResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(prefix)}`);
       if (spriteResponse.ok) {
+        const contentType = spriteResponse.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          const text = await spriteResponse.text();
+          console.error("Non-JSON response from S3 list (sprites):", text.slice(0, 200));
+          return;
+        }
         const data = await spriteResponse.json();
         if (data.success) {
           const s3Sprites: Record<string, string> = {};
@@ -852,7 +948,10 @@ export default function App() {
     }
 
     if (urlToDelete && urlToDelete.includes('/api/s3/get?key=')) {
-      const key = decodeURIComponent(urlToDelete.split('key=')[1]);
+      // Correctly extract the key and strip any trailing query parameters like &t=...
+      const rawKey = urlToDelete.split('key=')[1];
+      const key = decodeURIComponent(rawKey.split('&')[0]);
+      
       try {
         await fetch('/api/s3/delete', {
           method: 'DELETE',
@@ -963,7 +1062,8 @@ export default function App() {
     if (backgroundOverrides[category]) return sanitizeS3Url(backgroundOverrides[category]);
     
     // Check if the original background is a thematic category or picsum
-    if (scene.background.includes('picsum.photos') || !scene.background.includes('http')) {
+    // But skip if it's already a full S3 fetch URL
+    if ((scene.background.includes('picsum.photos') || !scene.background.includes('http')) && !scene.background.includes('/api/s3/')) {
       const themedUrl = NOVEL_THEMES[selectedNovelId]?.[category] || NOVEL_THEMES[selectedNovelId]?.['default'];
       if (themedUrl) return themedUrl;
     }
@@ -1153,17 +1253,41 @@ export default function App() {
       for (const part of response.candidates[0].content.parts) {
         if (part.inlineData) {
           const base64EncodeString: string = part.inlineData.data;
-          const imageUrl = `data:image/png;base64,${base64EncodeString}`;
+          const localImageUrl = `data:image/png;base64,${base64EncodeString}`;
           
-          setGeneratedSprites(prev => ({ ...prev, [charId]: imageUrl }));
-          setSpriteOverrides(prev => ({ ...prev, [charId]: imageUrl }));
+          // Fast feedback with local URL
+          setGeneratedSprites(prev => ({ ...prev, [charId]: localImageUrl }));
+          
+          let finalUrl = localImageUrl;
+          // Save to S3
+          try {
+            const s3Res = await fetch('/api/s3/upload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                key: `novels/${selectedNovelId}/sprites/${charId}.png`,
+                base64Data: base64EncodeString,
+                contentType: 'image/png'
+              })
+            });
+            if (s3Res.ok) {
+              const s3Data = await s3Res.json();
+              finalUrl = s3Data.url;
+            }
+          } catch (s3Error) {
+            console.error("Failed to save sprite to S3:", s3Error);
+          }
+
+          // Use the final URL (S3) for overrides and generated state
+          setSpriteOverrides(prev => ({ ...prev, [charId]: finalUrl }));
+          setGeneratedSprites(prev => ({ ...prev, [charId]: finalUrl }));
           
           // Update history
           const currentHistory = spriteHistory[charId] || await getSpriteHistory(charId);
-          const newHistory = [imageUrl, ...currentHistory.filter(img => img !== imageUrl)].slice(0, 10);
+          const newHistory = [finalUrl, ...currentHistory.filter(img => img !== finalUrl)].slice(0, 10);
           setSpriteHistory(prev => ({ ...prev, [charId]: newHistory }));
           
-          await saveToCache('sprites', charId, imageUrl);
+          await saveToCache('sprites', charId, finalUrl);
           await saveSpriteHistory(charId, newHistory);
 
           // Save history to S3
@@ -1181,21 +1305,6 @@ export default function App() {
             });
           } catch (historyS3Error) {
             console.error("Failed to save history to S3:", historyS3Error);
-          }
-
-          // Save to S3
-          try {
-            await fetch('/api/s3/upload', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                key: `novels/${selectedNovelId}/sprites/${charId}.png`,
-                base64Data: base64EncodeString,
-                contentType: 'image/png'
-              })
-            });
-          } catch (s3Error) {
-            console.error("Failed to save sprite to S3:", s3Error);
           }
           break;
         }
@@ -1303,6 +1412,38 @@ export default function App() {
     }
   }, [currentCharacter?.id, selectedNovelId]);
 
+  useEffect(() => {
+    if (isCharVoiceSelectorOpen && elevenLabsVoices.length === 0) {
+      fetchElevenLabsVoices();
+    }
+  }, [isCharVoiceSelectorOpen]);
+
+  const fetchElevenLabsVoices = async () => {
+    setIsFetchingVoices(true);
+    try {
+      const res = await fetch('/api/tts/elevenlabs/voices');
+      if (res.ok) {
+        const data = await res.json();
+        setElevenLabsVoices(data.voices || []);
+      }
+    } catch (e) {
+      console.error("Failed to fetch voices:", e);
+    } finally {
+      setIsFetchingVoices(false);
+    }
+  };
+
+  const groupedElevenLabsVoices = useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    elevenLabsVoices.forEach(voice => {
+      const cat = voice.category || 'Other';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(voice);
+    });
+    // Sort categories: generated, premade, etc.
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [elevenLabsVoices]);
+
   const handlePlayAudio = async (force = false) => {
     if (!currentDialogue || isAudioLoading) return;
 
@@ -1319,7 +1460,8 @@ export default function App() {
     setErrorMessage(null);
     try {
       const voiceOverride = currentCharacter?.id ? voiceOverrides[currentCharacter.id] : voiceOverrides['narrator'];
-      const base64 = await generateSpeech(currentDialogue.text, currentDialogue.characterId, voiceOverride, force, selectedNovelId || undefined, currentCharacter?.gender);
+      const customVoiceId = currentCharacter?.id ? voiceIdOverrides[currentCharacter.id] : voiceIdOverrides['narrator'];
+      const base64 = await generateSpeech(currentDialogue.text, currentDialogue.characterId, voiceOverride, force, selectedNovelId || undefined, currentCharacter?.gender, customVoiceId);
       
       // Check if we are still on the same dialogue
       if (
@@ -1337,10 +1479,11 @@ export default function App() {
         await playAudio(base64, effectiveSpeed, () => {
           setIsAudioPlaying(false);
           setIsAudioPaused(false);
-          if (isAutoAdvance && !isMenuOpen && !isSettingsOpen) {
+          if (isAutoAdvance && !isMenuOpen && !isSettingsOpen && !isManualPaused) {
             setTimeout(() => {
               // Re-check indices before advancing
               if (
+                !isManualPaused &&
                 currentDialogueRef.current.chapter === startIndices.chapter &&
                 currentDialogueRef.current.scene === startIndices.scene &&
                 currentDialogueRef.current.dialogue === startIndices.dialogue
@@ -1374,9 +1517,11 @@ export default function App() {
     if (isAudioPaused) {
       resumeAudio();
       setIsAudioPaused(false);
-    } else {
+      setIsManualPaused(false);
+    } else if (isAudioPlaying) {
       pauseAudio();
       setIsAudioPaused(true);
+      setIsManualPaused(true);
     }
   };
 
@@ -1625,12 +1770,13 @@ export default function App() {
     );
   };
 
-  if (!selectedNovelId || (!novel && !isNovelLoading)) {
+  if (!selectedNovelId || !novel) {
     return (
       <>
         <NovelLanding 
           novels={allMetadata}
           onSelect={(id) => {
+            setNovel(null);
             setSelectedNovelId(id);
             setIsMenuOpen(true);
           }} 
@@ -1642,6 +1788,7 @@ export default function App() {
             updateProgress(id, chIdx, scIdx, 0, user?.uid, version);
             
             // Trigger novel selection
+            setNovel(null);
             setSelectedNovelId(id);
             setIsMenuOpen(false); // Close menu if it was open (though normally it's closed in landing)
           }}
@@ -1654,16 +1801,6 @@ export default function App() {
         />
         {renderModals()}
       </>
-    );
-  }
-
-  if (isNovelLoading || !novel) {
-    return (
-      <div className="min-h-screen bg-[#1a1a1a] flex flex-col items-center justify-center text-white font-serif p-10">
-        <Loader2 className="w-12 h-12 animate-spin text-[#d4c5b0] mb-6" />
-        <h2 className="text-2xl font-bold mb-2 uppercase tracking-[0.2em]">Opening Library</h2>
-        <p className="text-white/50 animate-pulse italic">Preparing your visual experience...</p>
-      </div>
     );
   }
 
@@ -1807,7 +1944,7 @@ export default function App() {
           className="absolute inset-0"
         >
           <img 
-            src={getSceneBackground()} 
+            src={getSceneBackground() || undefined} 
             alt="Background" 
             className="w-full h-full object-cover opacity-60 grayscale-[0.2]"
             referrerPolicy="no-referrer"
@@ -1869,7 +2006,7 @@ export default function App() {
                 ) : (
                   <>
                     <img 
-                      src={spriteOverrides[currentCharacter.id] || generatedSprites[currentCharacter.id] || currentCharacter.image} 
+                      src={spriteOverrides[currentCharacter.id] || generatedSprites[currentCharacter.id] || currentCharacter.image || undefined} 
                       alt={currentCharacter.name}
                       className="w-full h-full object-cover grayscale-[0.1] sepia-[0.2]"
                       referrerPolicy="no-referrer"
@@ -2083,7 +2220,13 @@ export default function App() {
             </Button>
             {user ? (
               <Button variant="ghost" size="icon" className="bg-[#1a1a1a]/40 backdrop-blur-md rounded-none p-0 overflow-hidden w-8 h-8 md:w-10 md:h-10 hidden md:flex hover:ring-1 hover:ring-white/30" onClick={() => { handleStopAudio(); handleLogout(); }} title={`Logout (${user.displayName})`}>
-                <img src={user.photoURL || ''} alt={user.displayName || ''} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt={user.displayName || ''} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="w-full h-full bg-[#3d3126] flex items-center justify-center text-white/40">
+                    {user.displayName?.charAt(0) || 'U'}
+                  </div>
+                )}
               </Button>
             ) : (
               <Button variant="ghost" size="icon" className="bg-[#1a1a1a]/40 backdrop-blur-md rounded-none text-white/70 hover:text-white hover:bg-white/20 w-8 h-8 md:w-10 md:h-10 hidden md:flex" onClick={() => { handleStopAudio(); handleLogin(); }} title="PLEASE LOG IN">
@@ -2239,23 +2382,25 @@ export default function App() {
                     >
                       {currentCharacter.name}
                     </div>
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      className="h-8 w-8 bg-white/10 backdrop-blur-sm text-white/60 hover:text-white hover:bg-white/20 rounded-none"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onPointerUp={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        unlockAudio();
-                        handlePlayAudio(true);
-                      }}
-                      disabled={isAudioLoading}
-                      title="Play Dialogue Audio"
-                    >
-                      {isAudioLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Volume2 className="w-4 h-4" />}
-                    </Button>
-                    {isAudioPlaying && (
+                    {isAudioEnabled && user?.email === 'jwalter1@gmail.com' && (
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 bg-white/10 backdrop-blur-sm text-white/60 hover:text-white hover:bg-white/20 rounded-none"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          unlockAudio();
+                          handlePlayAudio(true);
+                        }}
+                        disabled={isAudioLoading}
+                        title="Play/Regenerate Dialogue Audio"
+                      >
+                        {isAudioLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                      </Button>
+                    )}
+                    {isAudioEnabled && (
                       <Button 
                         variant="ghost" 
                         size="icon" 
@@ -2296,6 +2441,23 @@ export default function App() {
                     >
                       <History className="w-4 h-4" />
                     </Button>
+                    {isAudioEnabled && (
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 bg-white/10 backdrop-blur-sm text-white/60 hover:text-white hover:bg-white/20 rounded-none"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedCharForVoice({ id: currentCharacter.id, name: currentCharacter.name });
+                          setIsCharVoiceSelectorOpen(true);
+                        }}
+                        title="Update Voice ID"
+                      >
+                        <Mic className="w-4 h-4" />
+                      </Button>
+                    )}
                   </>
                 ) : (
                   <>
@@ -2305,23 +2467,25 @@ export default function App() {
                     >
                       Narrator
                     </div>
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      className="h-8 w-8 bg-white/10 backdrop-blur-sm text-white/60 hover:text-white hover:bg-white/20 rounded-none"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onPointerUp={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        unlockAudio();
-                        handlePlayAudio(true);
-                      }}
-                      disabled={isAudioLoading}
-                      title="Regenerate Narrator Audio"
-                    >
-                      {isAudioLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                    </Button>
-                    {isAudioPlaying && (
+                    {isAudioEnabled && user?.email === 'jwalter1@gmail.com' && (
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 bg-white/10 backdrop-blur-sm text-white/60 hover:text-white hover:bg-white/20 rounded-none"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          unlockAudio();
+                          handlePlayAudio(true);
+                        }}
+                        disabled={isAudioLoading}
+                        title="Regenerate Narrator Audio"
+                      >
+                        {isAudioLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                      </Button>
+                    )}
+                    {isAudioEnabled && (
                       <Button 
                         variant="ghost" 
                         size="icon" 
@@ -2332,6 +2496,23 @@ export default function App() {
                         title={isAudioPaused ? "Resume Audio" : "Pause Audio"}
                       >
                         {isAudioPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                      </Button>
+                    )}
+                    {isAudioEnabled && (
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 bg-white/10 backdrop-blur-sm text-white/60 hover:text-white hover:bg-white/20 rounded-none"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedCharForVoice({ id: 'narrator', name: 'Narrator' });
+                          setIsCharVoiceSelectorOpen(true);
+                        }}
+                        title="Update Narrator Voice ID"
+                      >
+                        <Mic className="w-4 h-4" />
                       </Button>
                     )}
                   </>
@@ -2392,6 +2573,28 @@ export default function App() {
             <ChevronLeft className="w-4 h-4 mr-2" />
             Back
           </Button>
+
+          {isAutoAdvance && (
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              className="text-white/60 hover:text-white hover:bg-white/10 flex items-center gap-2 px-4 border border-white/10 hover:border-white/30 backdrop-blur-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isAudioPlaying || isAudioPaused) {
+                  togglePauseAudio(e);
+                } else {
+                  setIsManualPaused(!isManualPaused);
+                }
+              }}
+              title={isManualPaused ? "Resume auto-forwarding" : "Pause auto-forwarding"}
+            >
+              {isManualPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+              <span className="uppercase tracking-[0.2em] text-[10px] font-bold">
+                {isManualPaused ? 'Resume' : 'Pause'}
+              </span>
+            </Button>
+          )}
           
           <div className="hidden md:flex gap-1">
             {currentScene.dialogue.map((_, idx) => (
@@ -2650,6 +2853,140 @@ export default function App() {
                     novelId={selectedNovelId || 'great-gatsby'} 
                     onComplete={loadS3Backgrounds} 
                   />
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        
+        {/* Character Voice Selection Modal */}
+        <AnimatePresence>
+          {isCharVoiceSelectorOpen && selectedCharForVoice && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onClick={() => setIsCharVoiceSelectorOpen(false)}
+            >
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                className="bg-white w-full max-w-lg shadow-2xl rounded-none overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Mic className="w-6 h-6 text-[#8b7355]" />
+                    <h2 className="text-xl font-bold font-serif">Voice ID: {selectedCharForVoice.name}</h2>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => setIsCharVoiceSelectorOpen(false)}>
+                    <X className="w-5 h-5" />
+                  </Button>
+                </div>
+
+                <div className="p-6 space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-gray-500">Current Voice ID</label>
+                    <div className="flex gap-2">
+                       <input 
+                        type="text"
+                        className="flex-1 bg-gray-50 border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:border-[#8b7355]"
+                        placeholder={ELEVENLABS_VOICES[selectedCharForVoice.id] || ELEVENLABS_VOICES['narrator']}
+                        value={voiceIdOverrides[selectedCharForVoice.id] || ''}
+                        onChange={(e) => setVoiceIdOverrides(prev => ({ ...prev, [selectedCharForVoice.id]: e.target.value }))}
+                      />
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="rounded-none px-4"
+                        onClick={() => {
+                          setVoiceIdOverrides(prev => {
+                            const next = { ...prev };
+                            delete next[selectedCharForVoice.id];
+                            return next;
+                          });
+                        }}
+                      >
+                        Reset
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-gray-500">ElevenLabs Library</label>
+                    <div className="max-h-64 overflow-y-auto custom-scrollbar border border-gray-100 bg-gray-50/50">
+                      {isFetchingVoices ? (
+                        <div className="p-12 flex flex-col items-center justify-center gap-3 text-gray-400">
+                          <Loader2 className="w-6 h-6 animate-spin" />
+                          <span className="text-[10px] uppercase tracking-widest">Fetching Voices...</span>
+                        </div>
+                      ) : elevenLabsVoices.length === 0 ? (
+                        <div className="p-12 text-center text-gray-400">
+                          <span className="text-[10px] uppercase tracking-widest">No Voices Found or API Key Missing</span>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-gray-100">
+                          {groupedElevenLabsVoices.map(([category, voices]) => (
+                            <div key={category} className="space-y-1">
+                              <div className="bg-gray-100/80 px-3 py-1.5 sticky top-0 z-10">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">{category}</span>
+                              </div>
+                              <div className="divide-y divide-gray-50">
+                                {voices.map((voice: any) => (
+                                  <div 
+                                    key={voice.voice_id} 
+                                    className={cn(
+                                      "p-3 flex items-center justify-between hover:bg-white cursor-pointer transition-colors",
+                                      voiceIdOverrides[selectedCharForVoice.id] === voice.voice_id && "bg-white border-l-4 border-l-[#8b7355]"
+                                    )}
+                                    onClick={() => setVoiceIdOverrides(prev => ({ ...prev, [selectedCharForVoice.id]: voice.voice_id }))}
+                                  >
+                                    <div className="flex flex-col">
+                                      <span className={cn("text-sm font-medium", voiceIdOverrides[selectedCharForVoice.id] === voice.voice_id && "text-[#8b7355]")}>
+                                        {voice.name}
+                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[8px] text-gray-400 font-mono uppercase tracking-tighter">
+                                          {voice.labels?.accent || 'Unknown'} / {voice.labels?.gender || 'Voice'}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 hover:text-[#8b7355]"
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          const base64 = await generateSpeech("Hello, this is " + voice.name + ".", selectedCharForVoice.id, 'ElevenLabs', false, undefined, undefined, voice.voice_id);
+                                          if (base64) playAudio(base64, readingSpeed);
+                                        }}
+                                      >
+                                        <Volume2 className="w-4 h-4" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-6 bg-gray-50 border-t border-gray-100">
+                  <Button 
+                    className="w-full rounded-none bg-[#1a1a1a] text-white uppercase tracking-widest text-[10px] h-12"
+                    onClick={() => setIsCharVoiceSelectorOpen(false)}
+                  >
+                    Done
+                  </Button>
                 </div>
               </motion.div>
             </motion.div>
@@ -3117,15 +3454,16 @@ export default function App() {
                                 isActive ? "border-[#d4c5b0]" : "border-transparent hover:border-gray-200"
                               )}
                               onClick={async () => {
+                                // Fast update
                                 setSpriteOverrides(prev => ({ ...prev, [currentCharacter.id]: img }));
                                 setGeneratedSprites(prev => ({ ...prev, [currentCharacter.id]: img }));
-                                await saveToCache('sprites', currentCharacter.id, img);
                                 
-                                // Also update S3 with the selected sprite
+                                // Process upload if it's base64, then update with real URL
+                                let finalUrl = img;
                                 try {
                                   if (img.startsWith('data:')) {
                                     const base64Data = img.split(',')[1];
-                                    await fetch('/api/s3/upload', {
+                                    const s3Res = await fetch('/api/s3/upload', {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({
@@ -3134,19 +3472,24 @@ export default function App() {
                                         contentType: 'image/png'
                                       })
                                     });
-                                  } else {
-                                    // It's already a URL, but we want it to be the main one. 
-                                    // S3 copy or overwrite? For now, we just rely on setGeneratedSprites.
+                                    if (s3Res.ok) {
+                                      const s3Data = await s3Res.json();
+                                      finalUrl = s3Data.url;
+                                    }
                                   }
                                 } catch (e) {
                                   console.error("Failed to update active sprite in S3:", e);
                                 }
                                 
+                                setSpriteOverrides(prev => ({ ...prev, [currentCharacter.id]: finalUrl }));
+                                setGeneratedSprites(prev => ({ ...prev, [currentCharacter.id]: finalUrl }));
+                                await saveToCache('sprites', currentCharacter.id, finalUrl);
+                                
                                 setIsSpriteHistoryOpen(false);
                               }}
                             >
                               <img 
-                                src={img} 
+                                src={img || undefined} 
                                 alt={`${currentCharacter.name} portrait ${idx + 1}`}
                                 className="w-full h-full object-cover grayscale-[0.05] sepia-[0.05]"
                                 referrerPolicy="no-referrer"
@@ -3287,7 +3630,7 @@ export default function App() {
                 >
                   <X className="w-6 h-6" />
                 </Button>
-                <AdminPanel novels={allMetadata} />
+                <AdminPanel novels={allMetadata} user={user} />
               </div>
             </motion.div>
           )}

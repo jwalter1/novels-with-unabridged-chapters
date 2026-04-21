@@ -34,8 +34,12 @@ export const NOVELS_METADATA: NovelMetadata[] = [
     author: 'William Shakespeare',
     year: '1597',
     description: 'The classic tragedy of two young star-crossed lovers whose deaths ultimately reconcile their feuding families.',
-    coverImage: 'https://picsum.photos/seed/romeo/400/600',
+    coverImage: '/api/s3/get?key=backgrounds%2Ffallbacks%2Fromeo-juliet%2Fdefault.png',
     accentColor: '#dc2626',
+    homepage: 'https://www.gutenberg.org/ebooks/1513',
+    stylePrompt: 'High quality, detailed, atmospheric lighting, Italian Renaissance style, painterly aesthetic, dramatic shadows, romantic and tragic mood.',
+    abridgedEstimate: '20 min',
+    unabridgedEstimate: '3 hours',
     genre: 'Tragedy'
   },
   {
@@ -44,8 +48,9 @@ export const NOVELS_METADATA: NovelMetadata[] = [
     author: 'George Orwell',
     year: '1949',
     description: 'A dystopian social science fiction novel and cautionary tale about totalitarianism and surveillance.',
-    coverImage: 'https://picsum.photos/seed/1984/400/600',
+    coverImage: '/api/s3/get?key=backgrounds%2Ffallbacks%2F1984%2Fdefault.png',
     accentColor: '#1f2937',
+    stylePrompt: 'High quality, detailed, dystopian aesthetic, brutalist architecture, surveillance culture, gritty street level, dark and moody atmosphere, social realism influence.',
     genre: 'Dystopian'
   },
   {
@@ -54,8 +59,9 @@ export const NOVELS_METADATA: NovelMetadata[] = [
     author: 'Fyodor Dostoevsky',
     year: '1866',
     description: 'The mental anguish and moral dilemmas of Rodion Raskolnikov, an impoverished ex-student in Saint Petersburg.',
-    coverImage: 'https://picsum.photos/seed/crime/400/600',
+    coverImage: '/api/s3/get?key=backgrounds%2Ffallbacks%2Fcrime-punishment%2Fdefault.png',
     accentColor: '#7f1d1d',
+    stylePrompt: 'High quality, detailed, 19th century Saint Petersburg, grime and psychological tension, dramatic shadows, oil painting style, somber and intense mood.',
     genre: 'Literary Fiction'
   },
   {

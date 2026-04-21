@@ -1,17 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, BookOpen, Loader2, RefreshCw, BookMarked, ExternalLink, ListChecks } from 'lucide-react';
+import { X, BookOpen, Loader2, RefreshCw, BookMarked, ExternalLink, ListChecks, RotateCcw, Trash2, Sparkles, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ProgressData, getProgress } from '../services/progressService';
+import { Input } from '@/components/ui/input';
+import { ProgressData, getProgress, resetProgress, resetAllProgress } from '../services/progressService';
 import { getNovelData, NOVELS_METADATA } from '../data/bookData';
 import { NovelMetadata, BookVersion } from '../types';
+import { User } from '../firebase';
 
 interface ReadSummaryModalProps {
   isOpen: boolean;
   onClose: () => void;
   onJumpTo?: (novelId: string, version: BookVersion, chapterIndex: number, sceneIndex: number) => void;
+  user: User | null;
 }
 
 interface SceneProgressInfo {
@@ -26,18 +29,42 @@ interface NovelSummary {
   version: string;
   totalPagesRead: number;
   totalChaptersRead: number;
+  percentComplete: number;
+  updatedAt?: string;
   readScenes: SceneProgressInfo[];
 }
 
-export function ReadSummaryModal({ isOpen, onClose, onJumpTo }: ReadSummaryModalProps) {
+export function ReadSummaryModal({ isOpen, onClose, onJumpTo, user }: ReadSummaryModalProps) {
   const [summaries, setSummaries] = useState<NovelSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const totalOverallPages = summaries.reduce((sum, item) => sum + item.totalPagesRead, 0);
+
+  const filteredSummaries = summaries.filter(item => 
+    item.metadata.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    item.metadata.author.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   useEffect(() => {
     if (isOpen) {
       loadSummaries();
     }
   }, [isOpen]);
+
+  const handleReset = async (novelId: string, version: string) => {
+    if (confirm(`Are you sure you want to reset your progress for this edition of ${novelId}?`)) {
+      resetProgress(novelId, user?.uid, version);
+      await loadSummaries();
+    }
+  };
+
+  const handleResetAll = async () => {
+    if (confirm('Are you sure you want to reset ALL your reading progress? This cannot be undone.')) {
+      resetAllProgress(user?.uid);
+      await loadSummaries();
+    }
+  };
 
   const loadSummaries = async () => {
     setIsLoading(true);
@@ -51,11 +78,13 @@ export function ReadSummaryModal({ isOpen, onClose, onJumpTo }: ReadSummaryModal
           const novelData = await getNovelData(metadata.id, version as any);
           if (novelData) {
             let totalPages = 0;
+            let totalPossiblePages = 0;
             let readChaptersCount = new Set<number>();
             let readScenes: SceneProgressInfo[] = [];
 
             novelData.chapters.forEach((chapter, chIdx) => {
               chapter.scenes.forEach((scene, scIdx) => {
+                totalPossiblePages += scene.dialogue.length;
                 const key = `${chIdx}:${scIdx}`;
                 const maxDialogue = progress.sceneProgress[key];
                 if (maxDialogue !== undefined) {
@@ -78,6 +107,8 @@ export function ReadSummaryModal({ isOpen, onClose, onJumpTo }: ReadSummaryModal
                 version,
                 totalPagesRead: totalPages,
                 totalChaptersRead: readChaptersCount.size,
+                percentComplete: Math.min(100, Math.round((totalPages / totalPossiblePages) * 100)),
+                updatedAt: progress.updatedAt,
                 readScenes
               });
             }
@@ -85,6 +116,12 @@ export function ReadSummaryModal({ isOpen, onClose, onJumpTo }: ReadSummaryModal
         }
       }
     }
+
+    results.sort((a, b) => {
+      const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return bTime - aTime;
+    });
 
     setSummaries(results);
     setIsLoading(false);
@@ -149,77 +186,124 @@ export function ReadSummaryModal({ isOpen, onClose, onJumpTo }: ReadSummaryModal
                   </p>
                 </div>
               ) : (
-                <div className="space-y-16">
-                  {summaries.map((item, idx) => {
-                    const novelKey = `${item.metadata.id}-${item.version}`;
+                <div className="space-y-8">
+                  {/* Summary Header */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-6 bg-black/[0.02] border border-black/5 rounded-xl">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center">
+                        <Sparkles className="w-6 h-6 text-amber-500" />
+                      </div>
+                      <div>
+                        <div className="text-2xl font-bold tracking-tight">{totalOverallPages}</div>
+                        <div className="text-[10px] uppercase tracking-widest opacity-50 font-sans">Total Pages Explored Across All Volumes</div>
+                      </div>
+                    </div>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={handleResetAll}
+                      className="text-[10px] uppercase tracking-widest font-bold border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 font-sans"
+                    >
+                      <Trash2 className="w-3 h-3 mr-2" />
+                      Reset All Progress
+                    </Button>
+                  </div>
 
-                    return (
-                      <motion.div
-                        key={novelKey}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: idx * 0.1 }}
-                        className="group"
-                      >
-                        <div className="flex flex-col md:flex-row gap-8 items-start">
-                          {/* Book Metadata */}
-                          <div className="w-full md:w-56 shrink-0">
-                            <Card 
-                              className="aspect-[3/4] p-4 text-center flex flex-col items-center justify-center relative overflow-hidden text-white border-none shadow-md group-hover:shadow-xl transition-all"
-                              style={{ backgroundColor: item.metadata.accentColor }}
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-black/20" />
+                    <Input 
+                      placeholder="Search archived volumes..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-10 bg-black/[0.02] border-black/5 rounded-full font-sans text-sm"
+                    />
+                  </div>
+
+                  <div className="overflow-hidden border border-black/5 rounded-lg">
+                    <table className="w-full text-left border-collapse font-sans">
+                      <thead className="bg-black/5 uppercase text-[10px] tracking-widest font-bold">
+                        <tr>
+                          <th className="px-6 py-4">Volumes & Manuscripts</th>
+                          <th className="px-6 py-4">Edition</th>
+                          <th className="px-6 py-4">Pages read</th>
+                          <th className="px-6 py-4">Completion</th>
+                          <th className="px-6 py-4 text-right">Last Read</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-black/5">
+                        {filteredSummaries.map((item, idx) => {
+                          const novelKey = `${item.metadata.id}-${item.version}`;
+                          const lastReadDate = item.updatedAt ? new Date(item.updatedAt).toLocaleDateString(undefined, { 
+                            month: 'short', 
+                            day: 'numeric',
+                            year: 'numeric'
+                          }) : 'Long ago';
+
+                          return (
+                            <motion.tr 
+                              key={novelKey}
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: idx * 0.05 }}
+                              className="group hover:bg-amber-50/20 transition-colors"
                             >
-                              <div className="absolute inset-0 bg-black/10 transition-opacity group-hover:opacity-0" />
-                              <span className="text-[8px] uppercase tracking-[0.2em] opacity-60 mb-2 font-sans relative z-10">{item.metadata.author}</span>
-                              <h4 className="text-sm font-bold leading-tight mb-2 relative z-10">{item.metadata.title}</h4>
-                              <div className="w-6 h-px bg-white/30 my-2 relative z-10" />
-                              <Badge className="bg-white/10 text-[8px] text-white border-none py-0 h-4 relative z-10 uppercase tracking-widest">
-                                {item.version}
-                              </Badge>
-                            </Card>
-                            
-                            <div className="mt-4 space-y-2 font-sans">
-                              <div className="flex items-center justify-between text-[10px] opacity-60">
-                                <span>Pages Explored</span>
-                                <span className="font-bold">{item.totalPagesRead}</span>
-                              </div>
-                              <div className="flex items-center justify-between text-[10px] opacity-60 border-b border-black/5 pb-2">
-                                <span>Chapters Visited</span>
-                                <span className="font-bold">{item.totalChaptersRead}</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Dynamic Content Area */}
-                          <div className="flex-1 min-w-0">
-                            <div className="space-y-6">
-                              <div className="flex items-center gap-2">
-                                 <div className="h-px w-8 bg-black/5" />
-                                 <ListChecks className="w-3 h-3 text-amber-500/40" />
-                                 <span className="text-[10px] uppercase tracking-widest opacity-30 font-sans">Archived Scenes</span>
-                              </div>
-
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                 {item.readScenes.map((scene, sIdx) => (
-                                   <button
-                                     key={`${scene.chapterIndex}-${scene.sceneIndex}`}
-                                     onClick={() => onJumpTo?.(item.metadata.id, item.version as BookVersion, scene.chapterIndex, scene.sceneIndex)}
-                                     className="flex flex-col items-start p-3 rounded-lg border border-black/5 hover:border-amber-200 hover:bg-amber-50/30 transition-all text-left group/btn"
-                                   >
-                                     <div className="flex items-center justify-between w-full mb-1">
-                                       <span className="text-[8px] uppercase tracking-widest opacity-40 font-sans">Chapter {scene.chapterIndex + 1}</span>
-                                       <ExternalLink className="w-3 h-3 opacity-0 group-hover/btn:opacity-100 transition-opacity text-amber-600" />
-                                     </div>
-                                     <h5 className="text-xs font-bold truncate w-full mb-0.5">{scene.title}</h5>
-                                     <span className="text-[9px] italic opacity-50 truncate w-full">{scene.chapterTitle}</span>
-                                   </button>
-                                 ))}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    );
-                  })}
+                              <td className="px-6 py-4">
+                                <div className="flex items-center gap-4">
+                                  <div 
+                                    className="w-10 h-14 shrink-0 shadow-sm transition-transform group-hover:scale-105" 
+                                    style={{ backgroundColor: item.metadata.accentColor }} 
+                                  />
+                                  <div>
+                                    {item.metadata.homepage ? (
+                                      <a 
+                                        href={item.metadata.homepage} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="text-sm font-bold font-serif hover:text-amber-600 transition-colors flex items-center gap-1"
+                                      >
+                                        {item.metadata.title}
+                                        <ExternalLink className="w-3 h-3 opacity-30" />
+                                      </a>
+                                    ) : (
+                                      <div className="text-sm font-bold font-serif">{item.metadata.title}</div>
+                                    )}
+                                    <div className="text-[10px] opacity-50 uppercase tracking-wider">{item.metadata.author}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-6 py-4">
+                                <Badge variant="outline" className="text-[10px] rounded-none py-0 px-2 uppercase tracking-tight border-black/20">
+                                  {item.version}
+                                </Badge>
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="text-sm font-medium">{item.totalPagesRead}</div>
+                                <div className="text-[9px] opacity-40">Data Segments</div>
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-12 h-1 bg-black/5 rounded-full overflow-hidden">
+                                    <motion.div 
+                                      initial={{ width: 0 }}
+                                      animate={{ width: `${item.percentComplete}%` }}
+                                      className="h-full bg-amber-500"
+                                    />
+                                  </div>
+                                  <span className="text-xs font-bold">{item.percentComplete}%</span>
+                                </div>
+                                <div className="text-[9px] opacity-40">Manuscript Sync</div>
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                <div className="text-sm font-medium">{lastReadDate}</div>
+                                <div className="text-[9px] opacity-40">Journal Entry</div>
+                              </td>
+                            </motion.tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>

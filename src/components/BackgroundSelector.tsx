@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { X, Check, Sparkles, Loader2, ChevronDown, Edit3, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { generateImage, uploadToS3 } from '../services/imageService';
+import { generateImage, uploadToS3, uploadMetadata } from '../services/imageService';
 import { loadNovelPromptConfig, loadScenePromptConfig } from '../services/promptsService';
 import { Chapter, Scene } from '../types';
 import { NOVEL_THEMES } from '../data/thematicBackgrounds';
@@ -182,7 +182,7 @@ export function BackgroundSelector({
           contextSnippet = contextSnippet.substring(0, 300);
         }
         
-        setCustomPrompt(`A cinematic scene from ${novelTitle}, ${chapterNum}: ${selectedScene.title}. ${contextSnippet}... ${stylePrompt}`);
+        setCustomPrompt(`A cinematic empty background scene (no characters) from ${novelTitle}, ${chapterNum}: ${selectedScene.title}. ${contextSnippet}... ${stylePrompt}`);
       }
     };
     
@@ -199,9 +199,31 @@ export function BackgroundSelector({
       const base64 = await generateImage(customPrompt);
       if (scope === 'scene') {
         const url = await uploadToS3(`novels/${novelId}/scenes/${selectedScene.id}_${Date.now()}.png`, base64);
+        
+        // Save prompt metadata
+        try {
+          const metaKey = url.includes('key=') 
+            ? decodeURIComponent(url.split('key=')[1].split('&')[0]).replace('.png', '.json')
+            : `novels/${novelId}/scenes/${selectedScene.id}_${Date.now()}.json`;
+          await uploadMetadata(metaKey, { prompt: customPrompt, generatedAt: new Date().toISOString(), novelId, sceneId: selectedScene.id });
+        } catch (e) {
+          console.warn("Failed to save background metadata:", e);
+        }
+
         onGenerate(selectedScene.id, url);
       } else {
         const url = await uploadToS3(`novels/${novelId}/pages/${selectedScene.id}_${selectedPageIndex}_${Date.now()}.png`, base64);
+
+        // Save prompt metadata
+        try {
+          const metaKey = url.includes('key=') 
+            ? decodeURIComponent(url.split('key=')[1].split('&')[0]).replace('.png', '.json')
+            : `novels/${novelId}/pages/${selectedScene.id}_${selectedPageIndex}_${Date.now()}.json`;
+          await uploadMetadata(metaKey, { prompt: customPrompt, generatedAt: new Date().toISOString(), novelId, sceneId: selectedScene.id, pageIndex: selectedPageIndex });
+        } catch (e) {
+          console.warn("Failed to save page background metadata:", e);
+        }
+
         onGeneratePage?.(selectedScene.id, selectedPageIndex, url);
       }
     } catch (error) {
@@ -410,7 +432,7 @@ export function BackgroundSelector({
               >
                 <div className="aspect-video bg-gray-200 relative">
                   <img 
-                    src={sanitizeS3Url(currentImageOverride)} 
+                    src={sanitizeS3Url(currentImageOverride) || undefined} 
                     alt="Unique" 
                     className="w-full h-full object-cover"
                     referrerPolicy="no-referrer"
@@ -465,7 +487,7 @@ export function BackgroundSelector({
                 >
                   <div className="aspect-video bg-gray-200 relative">
                     <img 
-                      src={sanitizeS3Url(url)} 
+                      src={sanitizeS3Url(url) || undefined} 
                       alt="Generated Page" 
                       className="w-full h-full object-cover"
                       referrerPolicy="no-referrer"
@@ -518,7 +540,7 @@ export function BackgroundSelector({
               >
                 <div className="aspect-video bg-gray-200 relative">
                 <img 
-                  src={getOriginalBackgroundUrl(selectedScene.background)} 
+                  src={getOriginalBackgroundUrl(selectedScene.background) || undefined} 
                   alt="Default" 
                   className="w-full h-full object-cover"
                   referrerPolicy="no-referrer"
@@ -601,7 +623,7 @@ export function BackgroundSelector({
           onClick={() => setFullImage(null)}
         >
           <img 
-            src={fullImage} 
+            src={fullImage || undefined} 
             alt="Full Preview" 
             className="max-w-full max-h-full object-contain shadow-2xl"
             referrerPolicy="no-referrer"
