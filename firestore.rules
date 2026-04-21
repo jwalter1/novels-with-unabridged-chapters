@@ -1,0 +1,246 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {userId}
+// Fields:
+//   - uid: string (required) - The user's unique ID
+//   - email: string (required) - The user's email address
+//   - displayName: string (optional) - The user's name
+//   - photoURL: string (optional) - The user's photo URL
+//   - updatedAt: string (required) - ISO 8601 timestamp
+//   - role: string (optional) - User role (e.g., 'admin', 'user')
+//
+// Collection: users/{userId}/progress
+// Document ID: {novelId}
+// Fields:
+//   - novelId: string (required)
+//   - sceneProgress: map (required) - Map of "chapterIndex:sceneIndex" to max dialogue index
+//   - lastPosition: map (optional) - { chapterIndex, sceneIndex, dialogueIndex }
+//   - uid: string (required) - The user's unique ID
+//   - updatedAt: string (optional) - ISO 8601 timestamp
+//
+// Collection: users/{userId}/novels/{novelId}/bookmarks
+// Document ID: {bookmarkId}
+// Fields:
+//   - id: string (required) - Bookmark ID
+//   - novelId: string (required)
+//   - chapterIndex: number (required)
+//   - sceneIndex: number (required)
+//   - dialogueIndex: number (required)
+//   - timestamp: number (required)
+//   - chapterTitle: string (required)
+//   - sceneTitle: string (required)
+//   - previewText: string (required)
+//   - uid: string (required)
+//
+// Collection: users/{userId}/settings
+// Document ID: global OR {novelId}
+// Fields:
+//   - novelId: string (required for book specific)
+//   - readingSpeed: number (optional)
+//   - isAudioEnabled: boolean (optional)
+//   - isAutoAdvance: boolean (optional)
+//   - autoAdvanceDelay: number (optional)
+//   - voiceOverrides: map (optional)
+//   - sceneBackgroundOverrides: map (optional)
+//   - sceneImageOverrides: map (optional)
+//   - backgroundOverrides: map (optional)
+//   - pinnedNovelIds: array (required for global)
+//   - uid: string (required)
+//   - updatedAt: string (required)
+//
+// Collection: novelConfigs
+// Document ID: {novelId}
+// Fields:
+//   - novelId: string (required)
+//   - stylePrompt: string (required)
+//   - updatedAt: string (required)
+//
+// Collection: novelConfigs/{novelId}/scenes
+// Document ID: {sceneId}
+// Fields:
+//   - sceneId: string (required)
+//   - promptOverride: string (required)
+//   - updatedAt: string (required)
+//
+// Collection: novelVoiceConfigs
+// Document ID: {novelId}
+// Fields:
+//   - novelId: string (required)
+//   - voiceMappings: map (required)
+//   - updatedAt: string (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (
+          (request.auth.token.email == "jwalter1@gmail.com" && request.auth.token.email_verified == true) ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        );
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             isValidDateString(data.updatedAt) &&
+             data.email.size() < 256 &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() < 1000));
+    }
+
+    function isValidProgress(data) {
+      return data.keys().hasAll(['sceneProgress', 'uid', 'novelId']) &&
+             data.uid == request.auth.uid &&
+             data.novelId is string &&
+             data.sceneProgress is map &&
+             (!('version' in data) || data.version is string) &&
+             (!('lastPosition' in data) || (
+               data.lastPosition is map &&
+               data.lastPosition.keys().hasAll(['chapterIndex', 'sceneIndex', 'dialogueIndex']) &&
+               data.lastPosition.chapterIndex is number &&
+               data.lastPosition.sceneIndex is number &&
+               data.lastPosition.dialogueIndex is number
+             )) &&
+             (!('updatedAt' in data) || isValidDateString(data.updatedAt));
+    }
+
+    function isValidBookmark(data, novelId) {
+      return data.keys().hasAll(['id', 'novelId', 'chapterIndex', 'sceneIndex', 'dialogueIndex', 'timestamp', 'chapterTitle', 'sceneTitle', 'previewText', 'uid']) &&
+             data.uid == request.auth.uid &&
+             data.novelId == novelId &&
+             data.id is string && data.id.size() < 100 &&
+             data.chapterIndex is number &&
+             data.sceneIndex is number &&
+             data.dialogueIndex is number &&
+             data.timestamp is number &&
+             data.chapterTitle is string && data.chapterTitle.size() < 200 &&
+             data.sceneTitle is string && data.sceneTitle.size() < 200 &&
+             data.previewText is string && data.previewText.size() < 500;
+    }
+
+    function isValidSettings(data, novelId) {
+      return data.keys().hasAll(['uid', 'updatedAt', 'novelId']) &&
+             data.uid == request.auth.uid &&
+             data.novelId == novelId &&
+             isValidDateString(data.updatedAt) &&
+             (!('readingSpeed' in data) || data.readingSpeed is number) &&
+             (!('isAudioEnabled' in data) || data.isAudioEnabled is bool) &&
+             (!('isAutoAdvance' in data) || data.isAutoAdvance is bool) &&
+             (!('autoAdvanceDelay' in data) || data.autoAdvanceDelay is number) &&
+             (!('voiceOverrides' in data) || data.voiceOverrides is map) &&
+             (!('sceneBackgroundOverrides' in data) || data.sceneBackgroundOverrides is map) &&
+             (!('sceneImageOverrides' in data) || data.sceneImageOverrides is map) &&
+             (!('backgroundOverrides' in data) || data.backgroundOverrides is map);
+    }
+
+    function isValidGlobalSettings(data) {
+      return (!('pinnedNovelIds' in data) || (data.pinnedNovelIds is list && data.pinnedNovelIds.size() < 100)) &&
+             (!('updatedAt' in data) || isValidDateString(data.updatedAt));
+    }
+
+    function isValidVoiceConfig(data, novelId) {
+      return data.keys().hasAll(['novelId', 'voiceMappings', 'updatedAt']) &&
+             data.novelId == novelId &&
+             data.voiceMappings is map &&
+             isValidDateString(data.updatedAt);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Prevent users from setting their own role to admin
+      allow create: if isOwner(userId) && isValidUserProfile(request.resource.data) && 
+                      (!('role' in request.resource.data) || request.resource.data.role != 'admin');
+      
+      allow update: if isOwner(userId) && isValidUserProfile(request.resource.data) && 
+                      (
+                        // Role can only be changed by admin
+                        (!('role' in request.resource.data) && !('role' in resource.data)) ||
+                        (request.resource.data.role == resource.data.role) ||
+                        isAdmin()
+                      );
+    }
+
+    match /users/{userId}/settings/{settingId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && (
+        (settingId == 'global' && isValidGlobalSettings(request.resource.data)) ||
+        (settingId != 'global' && isValidSettings(request.resource.data, settingId))
+      );
+    }
+
+    match /users/{userId}/progress/{novelKey} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && isValidProgress(request.resource.data);
+    }
+
+    match /users/{userId}/novels/{novelId} {
+      match /bookmarks/{bookmarkId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidBookmark(request.resource.data, novelId);
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    match /novelConfigs/{document=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /novelVoiceConfigs/{novelId} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidVoiceConfig(request.resource.data, novelId);
+    }
+
+    match /imported_novels/{document=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

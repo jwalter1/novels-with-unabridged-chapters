@@ -1,0 +1,194 @@
+{
+  "entities": {
+    "UserProgress": {
+      "title": "User Progress",
+      "description": "Stores the user's current position and scene completion in the novel.",
+      "type": "object",
+      "properties": {
+        "novelId": { "type": "string" },
+        "sceneProgress": {
+          "type": "object",
+          "description": "Map of 'chapterIndex:sceneIndex' to max dialogue index reached."
+        },
+        "lastPosition": {
+          "type": "object",
+          "properties": {
+            "chapterIndex": { "type": "number" },
+            "sceneIndex": { "type": "number" },
+            "dialogueIndex": { "type": "number" }
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the last update."
+        },
+        "uid": {
+          "type": "string",
+          "description": "The user's unique ID."
+        }
+      },
+      "required": ["sceneProgress", "uid", "novelId"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Basic user information.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "Bookmark": {
+      "title": "Bookmark",
+      "description": "A saved position in the novel.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "novelId": { "type": "string" },
+        "chapterIndex": { "type": "number" },
+        "sceneIndex": { "type": "number" },
+        "dialogueIndex": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "chapterTitle": { "type": "string" },
+        "sceneTitle": { "type": "string" },
+        "previewText": { "type": "string" },
+        "uid": { "type": "string" }
+      },
+      "required": ["id", "novelId", "chapterIndex", "sceneIndex", "dialogueIndex", "timestamp", "chapterTitle", "sceneTitle", "previewText", "uid"]
+    },
+    "UserSettings": {
+      "title": "User Settings",
+      "description": "Application preferences for the user.",
+      "type": "object",
+      "properties": {
+        "novelId": { "type": "string" },
+        "readingSpeed": { "type": "number" },
+        "isAudioEnabled": { "type": "boolean" },
+        "isAutoAdvance": { "type": "boolean" },
+        "autoAdvanceDelay": { "type": "number" },
+        "voiceOverrides": { "type": "object" },
+        "sceneBackgroundOverrides": { "type": "object" },
+        "sceneImageOverrides": { "type": "object" },
+        "uid": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "updatedAt", "novelId"]
+    },
+    "GlobalSettings": {
+      "title": "Global Settings",
+      "description": "Global application preferences for the user.",
+      "type": "object",
+      "properties": {
+        "pinnedNovelIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["pinnedNovelIds", "updatedAt"]
+    },
+    "NovelPromptConfig": {
+      "title": "Novel Prompt Config",
+      "description": "Overrides for AI generation prompts per novel.",
+      "type": "object",
+      "properties": {
+        "novelId": { "type": "string" },
+        "stylePrompt": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["novelId", "stylePrompt", "updatedAt"]
+    },
+    "ScenePromptConfig": {
+      "title": "Scene Prompt Config",
+      "description": "Scene-specific overrides for AI generation prompts.",
+      "type": "object",
+      "properties": {
+        "sceneId": { "type": "string" },
+        "promptOverride": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sceneId", "promptOverride", "updatedAt"]
+    },
+    "NovelVoiceConfig": {
+      "title": "Novel Voice Config",
+      "description": "Character voice ID mappings for a novel.",
+      "type": "object",
+      "properties": {
+        "novelId": { "type": "string" },
+        "voiceMappings": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["novelId", "voiceMappings", "updatedAt"]
+    },
+    "ImportedNovel": {
+      "title": "Imported Novel",
+      "description": "Metadata and characters for a novel imported via Project Gutenberg.",
+      "type": "object",
+      "properties": {
+        "metadata": { "type": "object" },
+        "characters": { "type": "object" }
+      },
+      "required": ["metadata", "characters"]
+    },
+    "ImportedChapter": {
+      "title": "Imported Chapter",
+      "description": "Full scene and dialogue data for a chapter of an imported novel.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "title": { "type": "string" },
+        "scenes": { "type": "array", "items": { "type": "object" } },
+        "novelId": { "type": "string" }
+      },
+      "required": ["id", "title", "scenes", "novelId"]
+    }
+  },
+  "firestore": {
+    "/imported_novels/{novelId}": {
+      "schema": "ImportedNovel",
+      "description": "Imported novel metadata and character data."
+    },
+    "/imported_novels/{novelId}/chapters/{chapterId}": {
+      "schema": "ImportedChapter",
+      "description": "Chapter-specific scene and dialogue data for imported novels."
+    },
+    "/novelConfigs/{novelId}": {
+      "schema": "NovelPromptConfig",
+      "description": "Global config for a novel's AI prompts."
+    },
+    "/novelConfigs/{novelId}/scenes/{sceneId}": {
+      "schema": "ScenePromptConfig",
+      "description": "Scene-specific prompt configuration."
+    },
+    "/novelVoiceConfigs/{novelId}": {
+      "schema": "NovelVoiceConfig",
+      "description": "Voice mappings for characters in a novel."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document."
+    },
+    "/users/{userId}/settings/global": {
+      "schema": "GlobalSettings",
+      "description": "User's global application settings (e.g. pinned books)."
+    },
+    "/users/{userId}/settings/{novelId}": {
+      "schema": "UserSettings",
+      "description": "User's application settings for a specific novel."
+    },
+    "/users/{userId}/progress/{novelId}": {
+      "schema": "UserProgress",
+      "description": "The user's current reading progress for a specific novel."
+    },
+    "/users/{userId}/novels/{novelId}/bookmarks/{bookmarkId}": {
+      "schema": "Bookmark",
+      "description": "User's saved bookmarks for a specific novel."
+    }
+  }
+}
