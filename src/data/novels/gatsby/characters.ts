@@ -56,3 +56,5 @@ export const characters = {
     description: "A blonde, spiritless man, anaemic, and faintly handsome. He is covered in a thin white veil of dust from his garage and wears worn-out work clothes."
   }
 };
+
+// project-sync-marker

@@ -146,3 +146,5 @@ export const trialCharacters: Record<string, Character> = {
     image: 'https://picsum.photos/seed/manufacturer/200/200'
   }
 };
+
+// project-sync-marker

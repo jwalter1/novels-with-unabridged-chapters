@@ -44,6 +44,7 @@ export interface NovelMetadata {
   abridgedEstimate?: string;
   unabridgedEstimate?: string;
   genre?: string;
+  allowedVersions?: BookVersion[];
 }
 
 export interface Novel {

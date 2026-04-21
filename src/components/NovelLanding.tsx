@@ -326,14 +326,21 @@ export function NovelLanding({
                         </Badge>
                       </>
                     )}
-                    {novel.abridgedEstimate && (
+                    {((novel.allowedVersions ? novel.allowedVersions.includes('abridged') : true) && novel.abridgedEstimate) ? (
                       <>
                         <span className="text-gray-300">•</span>
                         <span className="text-[10px] uppercase tracking-widest opacity-60 font-sans flex items-center gap-1">
                           <Clock className="w-2.5 h-2.5" /> {novel.abridgedEstimate}
                         </span>
                       </>
-                    )}
+                    ) : (novel.unabridgedEstimate && (
+                      <>
+                        <span className="text-gray-300">•</span>
+                        <span className="text-[10px] uppercase tracking-widest opacity-60 font-sans flex items-center gap-1">
+                          <Clock className="w-2.5 h-2.5" /> {novel.unabridgedEstimate}
+                        </span>
+                      </>
+                    ))}
                   </div>
                   <h3 className="text-lg font-bold group-hover:text-primary transition-colors leading-tight">{novel.title}</h3>
                   <p className="text-xs opacity-70 italic mb-2">by {novel.author}</p>

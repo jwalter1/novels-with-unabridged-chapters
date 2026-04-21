@@ -89,7 +89,8 @@ export const NOVELS_METADATA: NovelMetadata[] = [
     stylePrompt: 'High quality, detailed, ancient Greek style, illustrative, fable aesthetic, woodcut influence.',
     abridgedEstimate: '20 min',
     unabridgedEstimate: '2 hours',
-    genre: 'Fable'
+    genre: 'Fable',
+    allowedVersions: ['unabridged']
   },
   {
     id: 'animal-farm',
@@ -120,3 +121,5 @@ export const NOVELS_METADATA: NovelMetadata[] = [
     genre: 'Fantasy'
   }
 ];
+
+// project-sync-marker

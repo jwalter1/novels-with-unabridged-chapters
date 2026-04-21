@@ -100,10 +100,18 @@ export default function App() {
       if (selectedNovelId) {
         setIsNovelLoading(true);
         localStorage.setItem('selectedNovelId', selectedNovelId);
-        const version = bookVersions[selectedNovelId] || 'abridged';
+        const metadata = allMetadata.find(m => m.id === selectedNovelId);
+        let version = bookVersions[selectedNovelId] || 'abridged';
+        
+        // Respect allowedVersions if defined
+        if (metadata?.allowedVersions && !metadata.allowedVersions.includes(version as BookVersion)) {
+          const newVersion = metadata.allowedVersions[0];
+          setBookVersions(prev => ({ ...prev, [selectedNovelId]: newVersion }));
+          return; // Let the effect re-run with the new version
+        }
         
         try {
-          const data = await getNovelData(selectedNovelId, version);
+          const data = await getNovelData(selectedNovelId, version as BookVersion);
           
           // Set indices from progress if available, otherwise start at beginning
           const localProgress = getProgress(selectedNovelId, version);
@@ -1822,26 +1830,32 @@ export default function App() {
             <h1 className="text-4xl font-bold tracking-tighter text-[#1a1a1a] mb-1">{novel.metadata.title}</h1>
             <p className="text-lg italic text-gray-600 mb-4">A Visual Novel Experience</p>
             
-            <div className="flex w-fit mx-auto bg-black/5 p-1 rounded-md" onClick={(e) => e.stopPropagation()}>
-              <button 
-                onClick={() => setBookVersions(prev => ({ ...prev, [selectedNovelId]: 'abridged' }))}
-                className={cn(
-                  "px-4 py-1.5 text-[10px] uppercase tracking-[0.2em] rounded transition-all font-bold",
-                  (bookVersions[selectedNovelId] || 'abridged') === 'abridged' ? "bg-white shadow-md text-[#1a1a1a]" : "text-gray-400 hover:text-gray-600"
+            {(!novel.metadata.allowedVersions || (novel.metadata.allowedVersions.length > 1)) && (
+              <div className="flex w-fit mx-auto bg-black/5 p-1 rounded-md" onClick={(e) => e.stopPropagation()}>
+                {(!novel.metadata.allowedVersions || novel.metadata.allowedVersions.includes('abridged')) && (
+                  <button 
+                    onClick={() => setBookVersions(prev => ({ ...prev, [selectedNovelId]: 'abridged' }))}
+                    className={cn(
+                      "px-4 py-1.5 text-[10px] uppercase tracking-[0.2em] rounded transition-all font-bold",
+                      (bookVersions[selectedNovelId] || 'abridged') === 'abridged' ? "bg-white shadow-md text-[#1a1a1a]" : "text-gray-400 hover:text-gray-600"
+                    )}
+                  >
+                    Abridged
+                  </button>
                 )}
-              >
-                Abridged
-              </button>
-              <button 
-                onClick={() => setBookVersions(prev => ({ ...prev, [selectedNovelId]: 'unabridged' }))}
-                className={cn(
-                  "px-4 py-1.5 text-[10px] uppercase tracking-[0.2em] rounded transition-all font-bold",
-                  bookVersions[selectedNovelId] === 'unabridged' ? "bg-white shadow-md text-[#1a1a1a]" : "text-gray-400 hover:text-gray-600"
+                {(!novel.metadata.allowedVersions || novel.metadata.allowedVersions.includes('unabridged')) && (
+                  <button 
+                    onClick={() => setBookVersions(prev => ({ ...prev, [selectedNovelId]: 'unabridged' }))}
+                    className={cn(
+                      "px-4 py-1.5 text-[10px] uppercase tracking-[0.2em] rounded transition-all font-bold",
+                      bookVersions[selectedNovelId] === 'unabridged' ? "bg-white shadow-md text-[#1a1a1a]" : "text-gray-400 hover:text-gray-600"
+                    )}
+                  >
+                    Unabridged
+                  </button>
                 )}
-              >
-                Unabridged
-              </button>
-            </div>
+              </div>
+            )}
 
             <div className="mt-4 flex flex-col items-center gap-1">
               <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-gray-500 font-bold">

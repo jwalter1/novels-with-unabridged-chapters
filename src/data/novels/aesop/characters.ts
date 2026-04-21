@@ -72,3 +72,5 @@ export const characters: Record<string, Character> = {
   old_woman: { id: 'old_woman', name: 'The Old Woman', color: '#831843', gender: 'female' },
   goat: { id: 'goat', name: 'The Goat', color: '#52525b', gender: 'male' }
 };
+
+// project-sync-marker

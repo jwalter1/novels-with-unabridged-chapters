@@ -72,7 +72,8 @@ export function ReadSummaryModal({ isOpen, onClose, onJumpTo, user }: ReadSummar
 
     // Check progress for each novel (both abridged and unabridged)
     for (const metadata of NOVELS_METADATA) {
-      for (const version of ['abridged', 'unabridged']) {
+      const versions = (metadata.allowedVersions || ['abridged', 'unabridged']) as BookVersion[];
+      for (const version of versions) {
         const progress = getProgress(metadata.id, version);
         if (Object.keys(progress.sceneProgress).length > 0) {
           const novelData = await getNovelData(metadata.id, version as any);

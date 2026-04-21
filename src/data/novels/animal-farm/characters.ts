@@ -107,3 +107,5 @@ export const characters: Record<string, Character> = {
     description: 'The human solicitor who acts as an intermediary between Animal Farm and the outside world.'
   }
 };
+
+// project-sync-marker

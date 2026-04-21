@@ -126,3 +126,5 @@ export const characters: Record<string, Character> = {
     gender: 'male',
   }
 };
+
+// project-sync-marker

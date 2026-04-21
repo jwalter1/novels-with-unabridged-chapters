@@ -224,3 +224,5 @@ export const characters = {
     description: "A young woman of about sixteen, tall and somewhat shy, with a sweet and gentle face. She wears delicate, girlish Regency-era dresses and has a graceful, modest personality."
   }
 };
+
+// project-sync-marker
