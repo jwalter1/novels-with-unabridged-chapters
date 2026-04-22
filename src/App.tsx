@@ -21,6 +21,7 @@ import { AVAILABLE_VOICES, VoiceName, CHARACTER_VOICES } from './services/ttsSer
 import { auth, signInWithPopup, signOut, onAuthStateChanged, googleProvider, User, db, doc, setDoc, handleFirestoreError, OperationType } from './firebase';
 import { LogIn, LogOut } from 'lucide-react';
 import { syncSettingsToCloud, loadSettingsFromCloud, UserSettings, syncGlobalSettingsToCloud, loadGlobalSettingsFromCloud } from './services/settingsService';
+import { uploadMetadata } from './services/imageService';
 import { saveNovelPromptConfig, loadNovelPromptConfig, loadAllNovelPromptConfigs } from './services/promptsService';
 import { saveNovelVoiceConfig, loadNovelVoiceConfig } from './services/voiceService';
 import { clearVoiceConfigCache } from './services/ttsService';
@@ -28,6 +29,7 @@ import { clearVoiceConfigCache } from './services/ttsService';
 import { listImportedNovels } from './services/novelService';
 
 import { NOVEL_THEMES } from './data/thematicBackgrounds';
+import { resolveSceneBackground, sanitizeS3Url } from './lib/resolutionUtils';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -687,6 +689,15 @@ export default function App() {
         spriteOverrides
       };
       syncSettingsToCloud(user.uid, selectedNovelId, settings);
+      
+      // Save S3 settings file for background scene mappings
+      uploadMetadata(`settings/${user.uid}/${selectedNovelId}_backgrounds.json`, {
+        sceneBackgroundOverrides,
+        sceneImageOverrides,
+        pageImageOverrides,
+        backgroundOverrides
+      }).catch(e => console.error("Failed to upload background mappings to S3:", e));
+
     }
   }, [user, readingSpeed, isAudioEnabled, isAutoAdvance, autoAdvanceDelay, voiceOverrides, voiceIdOverrides, sceneBackgroundOverrides, sceneImageOverrides, pageImageOverrides, backgroundOverrides, spriteOverrides]);
 
@@ -710,19 +721,6 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState<Record<string, boolean>>({});
   const [isSpriteHistoryOpen, setIsSpriteHistoryOpen] = useState(false);
   const [isImageGeneratorOpen, setIsImageGeneratorOpen] = useState(false);
-
-  const sanitizeS3Url = (url: string) => {
-    if (url && url.includes('amazonaws.com')) {
-      try {
-        const urlObj = new URL(url);
-        const key = urlObj.pathname.substring(1); // Remove leading slash
-        return `/api/s3/get?key=${encodeURIComponent(key)}`;
-      } catch (e) {
-        return url;
-      }
-    }
-    return url;
-  };
 
   const loadS3Backgrounds = async (novelId?: string) => {
     const id = novelId || selectedNovelId;
@@ -789,7 +787,7 @@ export default function App() {
       }
 
       if (id === selectedNovelId) {
-        setSceneImageOverrides(sceneOverrides);
+        setSceneImageOverrides(prev => ({ ...sceneOverrides, ...prev }));
       }
 
       // 3. Load Page-specific Backgrounds
@@ -818,18 +816,17 @@ export default function App() {
               }
             });
             if (id === selectedNovelId) {
-              setPageImageOverrides(pageOverrides);
+              setPageImageOverrides(prev => ({ ...pageOverrides, ...prev }));
               setPageBackgroundHistory(historyMap);
             }
           } else if (id === selectedNovelId) {
             // Success but no items returned (prefix might be empty)
-            setPageImageOverrides({});
+            // Do NOT wipe manual overrides. Let the existing manual overrides remain.
             setPageBackgroundHistory({});
           }
         }
       } else if (id === selectedNovelId) {
-        // Fetch failed, but we should still clear if we were expecting a refresh
-        setPageImageOverrides({});
+        // Fetch failed, but do NOT wipe manual assignments on network error.
         setPageBackgroundHistory({});
       }
     } catch (e) {
@@ -1094,50 +1091,19 @@ export default function App() {
     const scene = chapter.scenes[sceneIdx];
     if (!scene) return '';
 
-    const addVersion = (url: string) => {
-      if (!url) return url;
-      const separator = url.includes('?') ? '&' : '?';
-      return `${url}${separator}v=${assetVersion}`;
-    };
+    const result = resolveSceneBackground(scene, dialogueIdx, {
+      novelId: selectedNovelId,
+      assetVersion,
+      overrides: {
+        pageImageOverrides,
+        sceneImageOverrides,
+        globalSceneBackgrounds,
+        sceneBackgroundOverrides,
+        backgroundOverrides
+      }
+    });
 
-    // 0. Check for page-specific background (highest precedence)
-    const pageKey = `${scene.id}_${dialogueIdx}`;
-    if (pageImageOverrides[pageKey]) {
-      return addVersion(sanitizeS3Url(pageImageOverrides[pageKey]));
-    }
-
-    // 1. Check for scene-specific generated image (local/user override)
-    if (sceneImageOverrides[scene.id]) {
-      return addVersion(sanitizeS3Url(sceneImageOverrides[scene.id]));
-    }
-
-    // 2. Check for global scene background (from S3 shared space)
-    if (globalSceneBackgrounds[scene.id]) {
-      return addVersion(sanitizeS3Url(globalSceneBackgrounds[scene.id]));
-    }
-
-    // 3. Check for scene-specific category override
-    const sceneOverride = sceneBackgroundOverrides[scene.id];
-    if (sceneOverride) {
-      if (backgroundOverrides[sceneOverride]) return addVersion(sanitizeS3Url(backgroundOverrides[sceneOverride]));
-      // Use thematic mapping if exists
-      const themedUrl = NOVEL_THEMES[selectedNovelId]?.[sceneOverride];
-      if (themedUrl) return themedUrl;
-      return `/images/backgrounds/${sceneOverride}.png`;
-    }
-
-    // 4. Fallback to default category
-    const category = scene.background.split('/').pop()?.replace('.png', '') || '';
-    if (backgroundOverrides[category]) return addVersion(sanitizeS3Url(backgroundOverrides[category]));
-    
-    // Check if the original background is a thematic category or picsum
-    // But skip if it's already a full S3 fetch URL
-    if ((scene.background.includes('picsum.photos') || !scene.background.includes('http')) && !scene.background.includes('/api/s3/')) {
-      const themedUrl = NOVEL_THEMES[selectedNovelId]?.[category] || NOVEL_THEMES[selectedNovelId]?.['default'];
-      if (themedUrl) return themedUrl;
-    }
-
-    return addVersion(sanitizeS3Url(scene.background));
+    return result.url || '';
   }, [novel, selectedNovelId, pageImageOverrides, sceneImageOverrides, globalSceneBackgrounds, sceneBackgroundOverrides, backgroundOverrides, assetVersion]);
 
   const resolveCharacterSprite = useCallback((charId: string) => {
@@ -2026,12 +1992,15 @@ export default function App() {
             className="w-full h-full object-contain opacity-60 grayscale-[0.2]"
             referrerPolicy="no-referrer"
             onError={(e) => {
+              const target = e.target as HTMLImageElement;
               const defaultThemedUrl = selectedNovelId ? NOVEL_THEMES[selectedNovelId]?.['default'] : null;
-              if (defaultThemedUrl) {
-                (e.target as HTMLImageElement).src = defaultThemedUrl;
+              
+              if (target.src.includes('picsum.photos')) return;
+              if (defaultThemedUrl && !target.src.includes(defaultThemedUrl)) {
+                target.src = defaultThemedUrl;
                 return;
               }
-              (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${currentScene?.id || 'default'}/1920/1080?blur=10`;
+              target.src = `https://picsum.photos/seed/${currentScene?.id || 'default'}/1920/1080?blur=10`;
             }}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black from-0% via-transparent via-25% to-black/30" />
@@ -2391,52 +2360,54 @@ export default function App() {
         <div className="max-w-6xl mx-auto w-full relative flex flex-col md:flex-row items-center md:items-end gap-6 md:gap-8">
           
           {/* Character Portrait */}
-          <AnimatePresence mode="wait">
-            {currentCharacter && currentCharacter.id !== 'narrator' && (
-              <motion.div
-                key={currentCharacter.id}
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                transition={{ 
-                  type: "spring",
-                  stiffness: 100,
-                  damping: 20,
-                  opacity: { duration: 0.4 }
-                }}
-                className="relative w-[140px] md:w-[240px] shrink-0 pointer-events-auto cursor-pointer flex justify-center z-10 md:mb-4"
-              >
-                <div className="relative w-full aspect-[3/4] bg-white p-2 md:p-3 shadow-2xl border-4 md:border-8 border-[#d4c5b0] md:-rotate-2 rotate-0 flex items-center justify-center overflow-hidden">
-                  {isGenerating[currentCharacter.id] || (!spriteOverrides[currentCharacter.id] && !generatedSprites[currentCharacter.id] && !currentCharacter.image) ? (
-                    <div className="flex flex-col items-center justify-center space-y-2 md:space-y-4 text-[#2c241a]">
-                      <Loader2 className="w-8 h-8 md:w-12 md:h-12 animate-spin opacity-40" />
-                      <p className="text-[10px] md:text-xs uppercase tracking-widest opacity-60 text-center">Sketching...</p>
-                    </div>
-                  ) : (
-                    <>
-                      <img 
-                        src={spriteOverrides[currentCharacter.id] || generatedSprites[currentCharacter.id] || currentCharacter.image || undefined} 
-                        alt={currentCharacter.name}
-                        className="w-full h-full object-cover grayscale-[0.1] sepia-[0.2]"
-                        referrerPolicy="no-referrer"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${currentCharacter.id}/600/800?grayscale`;
-                        }}
-                      />
-                      {generatedSprites[currentCharacter.id] && (
-                        <div className="absolute top-2 right-2 bg-white/80 backdrop-blur-sm p-1 rounded-full shadow-sm">
-                          <Sparkles className="w-3 h-3 text-[#d4c5b0]" />
-                        </div>
-                      )}
-                    </>
-                  )}
-                  <div className="absolute inset-0 border border-black/10 pointer-events-none" />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="w-[140px] md:w-[240px] shrink-0 z-10 md:mb-4 flex justify-center">
+            <AnimatePresence mode="wait">
+              {currentCharacter && currentCharacter.id !== 'narrator' && (
+                <motion.div
+                  key={currentCharacter.id}
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ 
+                    type: "spring",
+                    stiffness: 100,
+                    damping: 20,
+                    opacity: { duration: 0.4 }
+                  }}
+                  className="relative pointer-events-auto cursor-pointer flex justify-center"
+                >
+                  <div className="relative w-full aspect-[3/4] bg-white p-2 md:p-3 shadow-2xl border-4 md:border-8 border-[#d4c5b0] md:-rotate-2 rotate-0 flex items-center justify-center overflow-hidden">
+                    {isGenerating[currentCharacter.id] || (!spriteOverrides[currentCharacter.id] && !generatedSprites[currentCharacter.id] && !currentCharacter.image) ? (
+                      <div className="flex flex-col items-center justify-center space-y-2 md:space-y-4 text-[#2c241a]">
+                        <Loader2 className="w-8 h-8 md:w-12 md:h-12 animate-spin opacity-40" />
+                        <p className="text-[10px] md:text-xs uppercase tracking-widest opacity-60 text-center">Sketching...</p>
+                      </div>
+                    ) : (
+                      <>
+                        <img 
+                          src={spriteOverrides[currentCharacter.id] || generatedSprites[currentCharacter.id] || currentCharacter.image || undefined} 
+                          alt={currentCharacter.name}
+                          className="w-full h-full object-cover grayscale-[0.1] sepia-[0.2]"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${currentCharacter.id}/600/800?grayscale`;
+                          }}
+                        />
+                        {generatedSprites[currentCharacter.id] && (
+                          <div className="absolute top-2 right-2 bg-white/80 backdrop-blur-sm p-1 rounded-full shadow-sm">
+                            <Sparkles className="w-3 h-3 text-[#d4c5b0]" />
+                          </div>
+                        )}
+                      </>
+                    )}
+                    <div className="absolute inset-0 border border-black/10 pointer-events-none" />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
 
-          <div className="flex-1 w-full min-w-0">
+          <div className="flex-1 w-full">
             <div
               key={`${currentChapterIndex}-${currentSceneIndex}-${currentDialogueIndex}`}
               className="relative"
@@ -3722,6 +3693,16 @@ export default function App() {
                   user={user} 
                   assetVersion={assetVersion}
                   onUpdateAssetVersion={setAssetVersion}
+                  pageImageOverrides={pageImageOverrides}
+                  sceneImageOverrides={sceneImageOverrides}
+                  sceneBackgroundOverrides={sceneBackgroundOverrides}
+                  backgroundOverrides={backgroundOverrides}
+                  onSetPageImageOverrides={setPageImageOverrides}
+                  onSetSceneImageOverrides={setSceneImageOverrides}
+                  onSetSceneBackgroundOverrides={setSceneBackgroundOverrides}
+                  onSetBackgroundOverrides={setBackgroundOverrides}
+                  selectedNovelId={selectedNovelId}
+                  onSelectNovel={setSelectedNovelId}
                 />
               </div>
             </motion.div>

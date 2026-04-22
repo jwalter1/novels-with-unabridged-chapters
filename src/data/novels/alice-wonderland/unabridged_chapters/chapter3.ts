@@ -55,7 +55,8 @@ export const chapter3: Chapter = {
           "characterId": "alice"
         },
         {
-          "text": "“In that case,” said the Dodo solemnly, rising to its feet, “I move that the meeting adjourn, for the immediate adoption of more energetic remedies—”"
+          "text": "“In that case,” said the Dodo solemnly, rising to its feet, “I move that the meeting adjourn, for the immediate adoption of more energetic remedies—”",
+          "characterId": "dodo"
         },
         {
           "text": "“Speak English!” said the Eaglet. “I don’t know the meaning of half those long words, and, what’s more, I don’t believe you do either!” And the Eaglet bent down its head to hide a smile: some of the other birds tittered audibly."
@@ -68,27 +69,31 @@ export const chapter3: Chapter = {
       "background": "default",
       "dialogue": [
         {
-          "text": "“What I was going to say,” said the Dodo in an offended tone, “was, that the best thing to get us dry would be a Caucus-race.”"
+          "text": "“What I was going to say,” said the Dodo in an offended tone, “was, that the best thing to get us dry would be a Caucus-race.”",
+          "characterId": "dodo"
         },
         {
           "text": "“What is a Caucus-race?” said Alice; not that she wanted much to know, but the Dodo had paused as if it thought that somebody ought to speak, and no one else seemed inclined to say anything.",
           "characterId": "alice"
         },
         {
-          "text": "“Why,” said the Dodo, “the best way to explain it is to do it.” (And, as you might like to try the thing yourself, some winter day, I will tell you how the Dodo managed it.)"
+          "text": "“Why,” said the Dodo, “the best way to explain it is to do it.” (And, as you might like to try the thing yourself, some winter day, I will tell you how the Dodo managed it.)",
+          "characterId": "dodo"
         },
         {
-          "text": "First it marked out a race-course, in a sort of circle, (“the exact shape doesn’t matter,” it said,) and then all the party were placed along the course, here and there. There was no “One, two, three, and away,” but they began running when they liked, and left off when they liked, so that it was not easy to know when the race was over. However, when they had been running half an hour or so, and were quite dry again, the Dodo suddenly called out “The race is over!” and they all crowded round it, panting, and asking, “But who has won?”"
+          "text": "First it marked out a race-course, in a sort of circle, (“the exact shape doesn’t matter,” it said,) and then all the party were placed along the course, here and there. There was no “One, two, three, and away,” but they began running when they liked, and left off when they liked, so that it was not easy to know when the race was over. However, when they had been running half an hour or so, and were quite dry again, the Dodo suddenly called out “The race is over!” and they all crowded round it, panting, and asking, “But who has won?”",
+          "characterId": "dodo"
         },
         {
-          "text": "This question the Dodo could not answer without a great deal of thought, and it sat for a long time with one finger pressed upon its forehead (the position in which you usually see Shakespeare, in the pictures of him), while the rest waited in silence. At last the Dodo said, “Everybody has won, and all must have prizes.”"
+          "text": "This question the Dodo could not answer without a great deal of thought, and it sat for a long time with one finger pressed upon its forehead (the position in which you usually see Shakespeare, in the pictures of him), while the rest waited in silence. At last the Dodo said, “Everybody has won, and all must have prizes.”",
+          "characterId": "dodo"
         },
         {
           "text": "“But who is to give the prizes?” quite a chorus of voices asked."
         },
         {
-          "text": "“Why, she, of course,” said the Dodo, pointing to Alice with one finger; and the whole party at once crowded round her, calling out in a confused way, “Prizes! Prizes!”",
-          "characterId": "alice"
+          "text": "“Why,” she, of course,” said the Dodo, pointing to Alice with one finger; and the whole party at once crowded round her, calling out in a confused way, “Prizes! Prizes!”",
+          "characterId": "dodo"
         },
         {
           "text": "Alice had no idea what to do, and in despair she put her hand in her pocket, and pulled out a box of comfits, (luckily the salt water had not got into it), and handed them round as prizes. There was exactly one a-piece, all round."
@@ -99,17 +104,19 @@ export const chapter3: Chapter = {
         },
         {
           "text": "“Of course,” the Dodo replied very gravely. “What else have you got in your pocket?” he went on, turning to Alice.",
-          "characterId": "alice"
+          "characterId": "dodo"
         },
         {
           "text": "“Only a thimble,” said Alice sadly.",
           "characterId": "alice"
         },
         {
-          "text": "“Hand it over here,” said the Dodo."
+          "text": "“Hand it over here,” said the Dodo.",
+          "characterId": "dodo"
         },
         {
-          "text": "Then they all crowded round her once more, while the Dodo solemnly presented the thimble, saying “We beg your acceptance of this elegant thimble;” and, when it had finished this short speech, they all cheered."
+          "text": "Then they all crowded round her once more, while the Dodo solemnly presented the thimble, saying “We beg your acceptance of this elegant thimble;” and, when it had finished this short speech, they all cheered.",
+          "characterId": "dodo"
         },
         {
           "text": "Alice thought the whole thing very absurd, but they all looked so grave that she did not dare to laugh; and, as she could not think of anything to say, she simply bowed, and took the thimble, looking as solemn as she could.",

@@ -105,6 +105,13 @@ export const characters: Record<string, Character> = {
     color: "#15803d",
     description: "An unfortunate lizard who is often the victim of accidents.",
     gender: "male"
+  },
+  dodo: {
+    id: "dodo",
+    name: "The Dodo",
+    color: "#475569",
+    description: "A bird who organizes the Caucus-race.",
+    gender: "male"
   }
 };
 

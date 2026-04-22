@@ -55,6 +55,7 @@ export function BackgroundSelector({
   const [customPrompt, setCustomPrompt] = useState('');
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [fullImage, setFullImage] = useState<string | null>(null);
+  const [imageRefreshKey, setImageRefreshKey] = useState(Date.now());
 
   // Sync selectedSceneId with currentSceneId when modal opens
   React.useEffect(() => {
@@ -122,6 +123,13 @@ export function BackgroundSelector({
       }
     }
     return url;
+  };
+
+  const getBustedUrl = (url: string | null | undefined) => {
+    if (!url) return undefined;
+    const sanitized = sanitizeS3Url(url);
+    const sep = sanitized.includes('?') ? '&' : '?';
+    return `${sanitized}${sep}v=${imageRefreshKey}`;
   };
 
   const getOriginalBackgroundUrl = (bg: string) => {
@@ -455,11 +463,11 @@ export function BackgroundSelector({
             {selectedScene && scope === 'scene' && currentImageOverride && (
               <div 
                 className="group relative cursor-pointer transition-all duration-300 border-2 overflow-hidden border-[#8b7355] shadow-lg flex flex-col bg-white"
-                onClick={() => setFullImage(sanitizeS3Url(currentImageOverride))}
+                onClick={() => setFullImage(getBustedUrl(currentImageOverride) || '')}
               >
                 <div className="aspect-video bg-gray-200 relative">
                   <img 
-                    src={sanitizeS3Url(currentImageOverride) || undefined} 
+                    src={getBustedUrl(currentImageOverride)} 
                     alt="Unique" 
                     className="w-full h-full object-cover"
                     referrerPolicy="no-referrer"
@@ -477,6 +485,16 @@ export function BackgroundSelector({
                     }}
                   >
                     <Trash2 className="w-4 h-4" />
+                  </button>
+                  <button 
+                    className="absolute bottom-2 left-2 bg-white text-gray-700 p-1.5 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100 z-10 shadow-sm border border-gray-200"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setImageRefreshKey(Date.now());
+                    }}
+                    title="Force refresh image"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
                   </button>
                 </div>
                 <div className="p-3">
@@ -510,11 +528,11 @@ export function BackgroundSelector({
                     "group relative cursor-pointer transition-all duration-300 border overflow-hidden flex flex-col bg-white",
                     isSelected ? "border-2 border-[#8b7355] shadow-lg" : "border-[#d4c5b0] hover:border-[#8b7355]/50"
                   )}
-                  onClick={() => setFullImage(sanitizeS3Url(url))}
+                  onClick={() => setFullImage(getBustedUrl(url) || '')}
                 >
                   <div className="aspect-video bg-gray-200 relative">
                     <img 
-                      src={sanitizeS3Url(url) || undefined} 
+                      src={getBustedUrl(url)} 
                       alt="Generated Page" 
                       className="w-full h-full object-cover"
                       referrerPolicy="no-referrer"
@@ -534,6 +552,16 @@ export function BackgroundSelector({
                       }}
                     >
                       <Trash2 className="w-4 h-4" />
+                    </button>
+                    <button 
+                      className="absolute bottom-2 left-2 bg-white text-gray-700 p-1.5 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100 z-10 shadow-sm border border-gray-200"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setImageRefreshKey(Date.now());
+                      }}
+                      title="Force refresh image"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
                     </button>
                   </div>
                   <div className="p-3">
@@ -563,11 +591,11 @@ export function BackgroundSelector({
             {selectedScene && (
               <div 
                 className="group relative cursor-pointer transition-all duration-300 border overflow-hidden border-[#d4c5b0] hover:border-[#8b7355]/50 flex flex-col bg-white"
-                onClick={() => setFullImage(getOriginalBackgroundUrl(selectedScene.background))}
+                onClick={() => setFullImage(getBustedUrl(getOriginalBackgroundUrl(selectedScene.background)) || '')}
               >
                 <div className="aspect-video bg-gray-200 relative">
                 <img 
-                  src={getOriginalBackgroundUrl(selectedScene.background) || undefined} 
+                  src={getBustedUrl(getOriginalBackgroundUrl(selectedScene.background))} 
                   alt="Default" 
                   className="w-full h-full object-cover"
                   referrerPolicy="no-referrer"
@@ -579,6 +607,16 @@ export function BackgroundSelector({
                     <Check className="w-4 h-4" />
                   </div>
                 ) : null}
+                <button 
+                  className="absolute bottom-2 left-2 bg-white text-gray-700 p-1.5 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100 z-10 shadow-sm border border-gray-200"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setImageRefreshKey(Date.now());
+                  }}
+                  title="Force refresh image"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
               </div>
               <div className="p-3">
                 <div className="flex items-center justify-between mb-1">
@@ -655,12 +693,25 @@ export function BackgroundSelector({
             className="max-w-full max-h-full object-contain shadow-2xl"
             referrerPolicy="no-referrer"
           />
-          <Button 
-            className="absolute top-4 right-4 bg-white/20 hover:bg-white/40 text-white rounded-none"
-            onClick={() => setFullImage(null)}
-          >
-            <X className="w-6 h-6" />
-          </Button>
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <Button 
+              className="bg-white/20 hover:bg-white/40 text-white rounded-none flex items-center gap-2"
+              onClick={(e) => {
+                e.stopPropagation();
+                setImageRefreshKey(Date.now());
+                const sep = fullImage.includes('?') ? '&' : '?';
+                setFullImage(`${fullImage.split('&v=')[0].split('?v=')[0]}${sep}v=${Date.now()}`);
+              }}
+            >
+              <RefreshCw className="w-5 h-5" />
+            </Button>
+            <Button 
+              className="bg-white/20 hover:bg-white/40 text-white rounded-none"
+              onClick={() => setFullImage(null)}
+            >
+              <X className="w-6 h-6" />
+            </Button>
+          </div>
         </div>
       )}
     </div>

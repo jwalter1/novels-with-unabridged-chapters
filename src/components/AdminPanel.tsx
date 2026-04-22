@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { Loader2, Sparkles, CheckCircle, AlertCircle, Trash2, Image as ImageIcon, Plus, RefreshCw, Upload, Terminal, Save, X, Users, Mic, BookOpen, Download } from 'lucide-react';
+import { Loader2, Sparkles, CheckCircle, AlertCircle, Trash2, Image as ImageIcon, Eye, Plus, RefreshCw, Upload, Terminal, Save, X, Users, Mic, BookOpen, Download } from 'lucide-react';
 import { generateImage, uploadToS3, uploadMetadata, getS3Metadata, checkS3Exists, listS3Objects, deleteS3Object } from '../services/imageService';
 import { saveNovelPromptConfig, loadNovelPromptConfig, saveScenePromptConfig, loadScenePromptConfig } from '../services/promptsService';
 import { saveNovelVoiceConfig, loadNovelVoiceConfig } from '../services/voiceService';
@@ -11,28 +11,56 @@ import { clearVoiceConfigCache, generateSpeech, playAudio, ELEVENLABS_VOICES } f
 import { fetchRawBookText, extractNovelMetadata, extractCharacters, splitIntoChapters, processChapter } from '../services/importService';
 import { saveImportedNovel } from '../services/novelService';
 import { clearStore, clearNovelFromCache } from '../services/cacheService';
-import { NOVEL_THEMES } from '../data/thematicBackgrounds';
+import { resolveSceneBackground } from '../lib/resolutionUtils';
 import { NOVELS_METADATA } from '../data/bookData';
 import { getNovelData } from '../data/bookData';
 import { auth, User } from '../firebase';
 import { Novel, Scene, NovelMetadata, Chapter } from '../types';
 
-type Tab = 'generate' | 'browse' | 'prompts' | 'sprites' | 'voices' | 'import';
+type Tab = 'generate' | 'browse' | 'preview' | 'prompts' | 'sprites' | 'voices' | 'import';
 
 interface AdminPanelProps {
   novels?: NovelMetadata[];
   user: User | null;
   assetVersion: number;
   onUpdateAssetVersion: (v: number) => void;
+  // Synced states
+  pageImageOverrides: Record<string, string>;
+  sceneImageOverrides: Record<string, string>;
+  sceneBackgroundOverrides: Record<string, string>;
+  backgroundOverrides: Record<string, string>;
+  onSetPageImageOverrides: (setter: (prev: Record<string, string>) => Record<string, string>) => void;
+  onSetSceneImageOverrides: (setter: (prev: Record<string, string>) => Record<string, string>) => void;
+  onSetSceneBackgroundOverrides: (setter: (prev: Record<string, string>) => Record<string, string>) => void;
+  onSetBackgroundOverrides: (setter: (prev: Record<string, string>) => Record<string, string>) => void;
+  selectedNovelId: string | null;
+  onSelectNovel: (id: string) => void;
 }
 
-export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpdateAssetVersion }: AdminPanelProps) {
+export function AdminPanel({ 
+  novels = NOVELS_METADATA, 
+  user, 
+  assetVersion, 
+  onUpdateAssetVersion,
+  pageImageOverrides,
+  sceneImageOverrides,
+  sceneBackgroundOverrides,
+  backgroundOverrides,
+  onSetPageImageOverrides,
+  onSetSceneImageOverrides,
+  onSetSceneBackgroundOverrides,
+  onSetBackgroundOverrides,
+  selectedNovelId,
+  onSelectNovel
+}: AdminPanelProps) {
+  const novelId = selectedNovelId || 'animal-farm';
+  const setNovelId = (id: string) => onSelectNovel(id);
+
   const isAdmin = user?.email === 'jwalter1@gmail.com';
 
   const [activeTab, setActiveTab] = useState<Tab>('generate');
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState<{key: string, status: 'pending' | 'success' | 'error' | 'skipped', message?: string}[]>([]);
-  const [novelId, setNovelId] = useState('animal-farm');
   
   const [assets, setAssets] = useState<{key: string, url: string}[]>([]);
   const [sprites, setSprites] = useState<{key: string, url: string}[]>([]);
@@ -69,6 +97,11 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
   const [metadataViewKey, setMetadataViewKey] = useState<string | null>(null);
 
+  const [selectedChapterIdx, setSelectedChapterIdx] = useState(0);
+  const [selectedSceneIdx, setSelectedSceneIdx] = useState(0);
+  const [selectedPageIdx, setSelectedPageIdx] = useState(-1);
+  const [assigningTo, setAssigningTo] = useState<{scene: Scene, pIdx: number} | null>(null);
+
   const addImportLog = (msg: string) => setImportLog(prev => [...prev.slice(-100), `${new Date().toLocaleTimeString()} - ${msg}`]);
 
   const [currentPrompt, setCurrentPrompt] = useState("");
@@ -78,39 +111,69 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
   const selectedSceneData = useMemo(() => {
-    if (promptScope !== 'scene' || !novelData) return null;
+    if (!novelData) return null;
     for (const chapter of novelData.chapters) {
       const scene = chapter.scenes.find(s => s.id === selectedSceneId);
       if (scene) return { ...scene, chapterTitle: chapter.title };
     }
-    return null;
-  }, [novelData, selectedSceneId, promptScope]);
-
-  const activeBackgroundUrl = useMemo(() => {
-    if (!selectedSceneData) return null;
-    
-    // Check for scene-specific overrides in S3 first
-    const override = assets.find(a => a.key.includes(`/scenes/${selectedSceneData.id}_`));
-    if (override) return override.url;
-
-    // If the background already looks like a processed S3 URL or external URL, use it
-    if (selectedSceneData.background.includes('/api/s3/') || selectedSceneData.background.startsWith('http')) {
-      return selectedSceneData.background;
+    // Fallback to indices if ID not found or not set
+    const sceneFromIdx = novelData.chapters?.[selectedChapterIdx]?.scenes?.[selectedSceneIdx];
+    if (sceneFromIdx) {
+      return { ...sceneFromIdx, chapterTitle: novelData.chapters[selectedChapterIdx]?.title };
     }
-
-    // Otherwise, handle it as a category key and look for fallbacks
-    const category = selectedSceneData.background.split('/').pop()?.replace('.png', '') || selectedSceneData.background;
-    
-    // Check manual S3 fallbacks
-    const fallback = assets.find(a => a.key === `backgrounds/fallbacks/${novelId}/${category}.png`);
-    if (fallback) return fallback.url;
-
-    // Check static theme mapping
-    const theme = NOVEL_THEMES[novelId];
-    if (theme && theme[category]) return theme[category];
-
     return null;
-  }, [selectedSceneData, assets, novelId]);
+  }, [novelData, selectedSceneId, selectedChapterIdx, selectedSceneIdx]);
+
+  const getSceneActiveBackground = useCallback((scene: Scene, dialogueIdxOverride?: number | null) => {
+    if (!scene) return { url: null, source: 'UNKNOWN' as const };
+    
+    // Use overrides from props which are synced to cloud
+    const overrides = {
+      pageImageOverrides,
+      sceneImageOverrides,
+      sceneBackgroundOverrides,
+      backgroundOverrides
+    };
+
+    const dialogueIdx = dialogueIdxOverride !== undefined 
+      ? dialogueIdxOverride 
+      : (selectedPageIdx === -1 ? null : selectedPageIdx);
+
+    return resolveSceneBackground(scene, dialogueIdx, {
+      novelId,
+      assetVersion,
+      assets,
+      overrides
+    });
+  }, [assets, novelId, assetVersion, selectedPageIdx, pageImageOverrides, sceneImageOverrides, sceneBackgroundOverrides, backgroundOverrides]);
+
+  const getBackgroundSourceLabel = useCallback((source: string) => {
+    switch (source) {
+      case 'USER_ASSIGNED_IMAGE':
+      case 'USER_ASSIGNED_CATEGORY_OVERRIDE':
+      case 'USER_ASSIGNED_THEME':
+        return <span className="text-blue-600 font-bold">MANUAL ASSIGNMENT</span>;
+      case 'S3_SCENE_OVERRIDE':
+        return <span className="text-green-600 font-bold">SCENE OVERRIDE (S3)</span>;
+      case 'DATA_DIRECT_URL':
+        return <span className="text-purple-600 font-bold">STORY DATA URL</span>;
+      case 'S3_ASSET_MATCH':
+        return <span className="text-cyan-600 font-bold">S3 STORE MATCH</span>;
+      case 'THEMATIC_FALLBACK':
+        return <span className="text-amber-600 font-bold">THEMATIC FALLBACK</span>;
+      case 'LOCAL_FALLBACK':
+        return <span className="text-gray-500 font-bold">LOCAL FALLBACK</span>;
+      default:
+        return <span className="text-gray-400 font-bold">{source}</span>;
+    }
+  }, []);
+
+  const activeBackgroundResult = useMemo(() => {
+    if (!selectedSceneData) return getSceneActiveBackground(null as any);
+    return getSceneActiveBackground(selectedSceneData);
+  }, [selectedSceneData, getSceneActiveBackground]);
+
+  const activeBackgroundUrl = activeBackgroundResult.url;
 
   const getAssetLabel = useCallback((key: string) => {
     if (key.includes('/scenes/')) {
@@ -156,10 +219,11 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
     try {
       const items = await listS3Objects(`novels/${novelId}/`);
       const fallbackItems = await listS3Objects(`backgrounds/fallbacks/${novelId}/`);
+      const manualItems = await listS3Objects(`backgrounds/manual/${novelId}/`);
       
       // Filter out non-image assets and exclude sprites (which have their own tab)
       const imageExtensions = ['.png', '.jpg', '.jpeg', '.webp'];
-      const filteredItems = [...items, ...fallbackItems].filter(item => 
+      const filteredItems = [...items, ...fallbackItems, ...manualItems].filter(item => 
         imageExtensions.some(ext => item.key.toLowerCase().endsWith(ext)) && 
         !item.key.includes('/sprites/')
       );
@@ -174,7 +238,7 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
   }, [novelId]);
 
   useEffect(() => {
-    if (activeTab === 'browse') {
+    if (activeTab === 'browse' || activeTab === 'preview') {
       fetchAssets();
     }
     if (activeTab === 'sprites') {
@@ -194,6 +258,9 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
       setNovelData(data);
       if (data?.chapters?.[0]?.scenes?.[0]) {
         setSelectedSceneId(data.chapters[0].scenes[0].id);
+        setSelectedChapterIdx(0);
+        setSelectedSceneIdx(0);
+        setSelectedPageIdx(0);
       }
     };
     loadData();
@@ -481,32 +548,69 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
     if (activeTab === 'browse') fetchAssets();
   };
 
-  const handleClearBrowserCache = async () => {
+  const handleClearBackgroundCache = async () => {
     if (!novelId) return;
     setIsClearingCache(true);
     try {
-      console.log(`Clearing browser cache for novel: ${novelId}`);
+      console.log(`Clearing background cache for novel: ${novelId}`);
       
-      // 1. Clear IndexedDB entries for this novel
-      await clearNovelFromCache(novelId);
-      
-      // 2. Clear voice config cache in memory
-      clearVoiceConfigCache(novelId);
-      
-      // 3. Update asset version to bust browser image cache
+      // 1. Update asset version to bust browser image cache for backgrounds
       onUpdateAssetVersion(Date.now());
       
-      // 4. Clear any specific localStorage if we identified any novel-specific ones
-      // For now, these are the main ones:
-      localStorage.removeItem(`novel_config_${novelId}`);
+      // 2. Clear ONLY background-related novel-specific config from localStorage
+      const configKey = `novel_config_${novelId}`;
+      const savedConfig = localStorage.getItem(configKey);
+      if (savedConfig) {
+        try {
+          const config = JSON.parse(savedConfig);
+          // Remove background related fields, preserve voice/speed etc.
+          delete config.sceneBackgroundOverrides;
+          delete config.sceneImageOverrides;
+          delete config.pageImageOverrides;
+          delete config.backgroundOverrides;
+          
+          localStorage.setItem(configKey, JSON.stringify(config));
+        } catch (e) {
+          localStorage.removeItem(configKey);
+        }
+      }
       
-      alert(`Cache cleared for ${novelId}. Fresh assets and configs will be retrieved on next load.`);
+      alert(`Background cache cleared for ${novelId}. Fresh assets will be retrieved on next load (Voice mappings, sprites and reading settings are preserved).`);
     } catch (error) {
-      console.error("Failed to clear cache:", error);
-      alert("Error clearing cache");
+      console.error("Failed to clear background cache:", error);
+      alert("Error clearing background cache");
     } finally {
       setIsClearingCache(false);
     }
+  };
+
+  const handleAssignBackground = (assetUrl: string) => {
+    if (!assigningTo || !novelId) return;
+    
+    const { scene, pIdx } = assigningTo;
+    const pageKey = `${scene.id}_${pIdx}`;
+    
+    // Update synced state via prop setter
+    onSetPageImageOverrides(prev => ({
+      ...prev,
+      [pageKey]: assetUrl
+    }));
+    
+    onUpdateAssetVersion(Date.now());
+    setAssigningTo(null);
+  };
+
+  const handleClearAssignment = (scene: Scene, pIdx: number) => {
+    if (!novelId) return;
+    const pageKey = `${scene.id}_${pIdx}`;
+    
+    onSetPageImageOverrides(prev => {
+      const next = { ...prev };
+      delete next[pageKey];
+      return next;
+    });
+    
+    onUpdateAssetVersion(Date.now());
   };
 
   const handleDeleteAsset = async (key: string) => {
@@ -847,6 +951,7 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
         {[
           { id: 'generate', label: 'Assets', icon: Sparkles },
           { id: 'browse', label: 'Backgrounds', icon: ImageIcon },
+          { id: 'preview', label: 'Preview', icon: Eye },
           { id: 'sprites', label: 'Sprites', icon: Users },
           { id: 'voices', label: 'Voices', icon: Mic },
           { id: 'import', label: 'Import', icon: BookOpen },
@@ -871,8 +976,8 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
         <div className="flex items-center justify-between mb-8 pb-6 border-b border-gray-100">
           <div>
             <h2 className="text-2xl font-bold font-serif text-[#2c241a] flex items-center gap-2">
-              {activeTab === 'generate' ? <Sparkles className="w-6 h-6 text-amber-500" /> : activeTab === 'browse' ? <ImageIcon className="w-6 h-6 text-blue-500" /> : activeTab === 'sprites' ? <Users className="w-6 h-6 text-green-600" /> : activeTab === 'voices' ? <Mic className="w-6 h-6 text-red-500" /> : activeTab === 'import' ? <BookOpen className="w-6 h-6 text-[#8b7355]" /> : <Terminal className="w-6 h-6 text-purple-500" />}
-              {activeTab === 'generate' ? 'Asset Generation' : activeTab === 'browse' ? 'Background Management' : activeTab === 'sprites' ? 'Character Sprites' : activeTab === 'voices' ? 'Voice assignments' : activeTab === 'import' ? 'Import New Book' : 'AI Prompt Settings'}
+              {activeTab === 'generate' ? <Sparkles className="w-6 h-6 text-amber-500" /> : activeTab === 'browse' ? <ImageIcon className="w-6 h-6 text-blue-500" /> : activeTab === 'preview' ? <Eye className="w-6 h-6 text-purple-600" /> : activeTab === 'sprites' ? <Users className="w-6 h-6 text-green-600" /> : activeTab === 'voices' ? <Mic className="w-6 h-6 text-red-500" /> : activeTab === 'import' ? <BookOpen className="w-6 h-6 text-[#8b7355]" /> : <Terminal className="w-6 h-6 text-purple-500" />}
+              {activeTab === 'generate' ? 'Asset Generation' : activeTab === 'browse' ? 'Background Assets' : activeTab === 'preview' ? 'Story Preview' : activeTab === 'sprites' ? 'Character Sprites' : activeTab === 'voices' ? 'Voice assignments' : activeTab === 'import' ? 'Import New Book' : 'AI Prompt Settings'}
             </h2>
             <p className="text-sm text-gray-500 mt-1">
               {activeTab === 'import' ? 'Extract book from Project Gutenberg' : `Configuring assets for novel`}
@@ -906,20 +1011,20 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
         {activeTab !== 'import' && (
           <div className="mb-6 bg-white border border-[#d4c5b0] p-4 flex items-center justify-between shadow-sm">
             <div className="flex flex-col">
-              <span className="text-xs font-bold uppercase tracking-widest text-red-600">Global Cache Management</span>
-              <span className="text-[10px] text-gray-500 italic">Force fresh asset retrieval and clear local storage for <strong>{novelId}</strong></span>
+              <span className="text-xs font-bold uppercase tracking-widest text-[#8b7355]">Background Cache Management</span>
+              <span className="text-[10px] text-gray-500 italic">Force fresh background retrieval for <strong>{novelId}</strong> (Preserves sprites & audio)</span>
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[10px] font-mono opacity-40 uppercase">v{assetVersion}</span>
               <Button 
-                onClick={handleClearBrowserCache}
+                onClick={handleClearBackgroundCache}
                 disabled={isClearingCache}
                 variant="outline"
                 size="sm"
-                className="border-red-200 text-red-600 hover:bg-red-50 rounded-none h-8 px-4 text-[10px] uppercase tracking-widest font-bold"
+                className="border-[#d4c5b0] text-[#8b7355] hover:bg-[#fdfbf7] rounded-none h-8 px-4 text-[10px] uppercase tracking-widest font-bold"
               >
                 {isClearingCache ? <Loader2 className="w-3 h-3 animate-spin mr-2" /> : <RefreshCw className="w-3 h-3 mr-2" />}
-                Clear Novel Cache
+                Clear Background Cache
               </Button>
             </div>
           </div>
@@ -1068,6 +1173,250 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
                 )}
               </div>
             </div>
+          </div>
+        ) : activeTab === 'preview' ? (
+          <div className="flex-1 flex flex-col space-y-6 overflow-hidden">
+            {/* Story Context Selectors */}
+            <div className="bg-[#fdfbf7] border border-[#d4c5b0] p-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-[#8b7355] block">Chapter</label>
+                  <select 
+                    value={selectedChapterIdx}
+                    onChange={(e) => {
+                      const idx = parseInt(e.target.value);
+                      setSelectedChapterIdx(idx);
+                      setSelectedSceneIdx(0);
+                      setSelectedPageIdx(0);
+                    }}
+                    className="w-full p-2 border border-[#d4c5b0] rounded bg-white text-xs font-bold outline-none ring-[#8b7355] focus:ring-1"
+                  >
+                    {novelData?.chapters.map((ch, idx) => (
+                      <option key={ch.id} value={idx}>CH {ch.id}: {ch.title}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-[#8b7355] block">Scene</label>
+                  <select 
+                    value={selectedSceneIdx}
+                    onChange={(e) => {
+                      const idx = parseInt(e.target.value);
+                      setSelectedSceneIdx(idx);
+                      if (idx === -1) {
+                        setSelectedPageIdx(-1);
+                      } else {
+                        setSelectedPageIdx(0);
+                        const scene = novelData?.chapters[selectedChapterIdx]?.scenes[idx];
+                        if (scene) setSelectedSceneId(scene.id);
+                      }
+                    }}
+                    className="w-full p-2 border border-[#d4c5b0] rounded bg-white text-xs font-bold outline-none ring-[#8b7355] focus:ring-1 disabled:opacity-50"
+                  >
+                    <option value="-1">Show all scenes in chapter</option>
+                    <optgroup label="Specific Scene">
+                      {novelData?.chapters?.[selectedChapterIdx]?.scenes.map((s, idx) => (
+                        <option key={s.id} value={idx}>{s.title}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-[#8b7355] block">View Mode</label>
+                  <select 
+                    value={selectedPageIdx}
+                    disabled={selectedSceneIdx === -1}
+                    onChange={(e) => setSelectedPageIdx(parseInt(e.target.value))}
+                    className="w-full p-2 border border-[#d4c5b0] rounded bg-white text-xs font-bold outline-none ring-[#8b7355] focus:ring-1 disabled:opacity-50"
+                  >
+                    <option value="-1">Show all pages in scene</option>
+                    <optgroup label="Specific Dialogue Page">
+                      {selectedSceneIdx !== -1 && novelData?.chapters?.[selectedChapterIdx]?.scenes?.[selectedSceneIdx]?.dialogue.map((d, idx) => (
+                        <option key={idx} value={idx}>Page {idx + 1}: {d.text.substring(0, 30)}...</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {novelData && (selectedPageIdx === -1 || selectedSceneIdx === -1) ? (
+              <div className="flex-1 overflow-y-auto bg-[#fdfbf7] p-6 custom-scrollbar border border-[#d4c5b0]">
+                <div className="max-w-4xl mx-auto space-y-12">
+                  {novelData.chapters[selectedChapterIdx]?.scenes
+                    .filter((scene, sIdx) => selectedSceneIdx === -1 || sIdx === selectedSceneIdx)
+                    .map((scene) => {
+                    return (
+                      <div key={scene.id} className="space-y-4">
+                        <div className="flex items-center gap-4 pb-2 border-b-2 border-[#8b7355]">
+                          <div className="h-4 w-4 bg-[#8b7355] rotate-45 shrink-0" />
+                          <h4 className="text-sm font-serif font-bold uppercase tracking-widest text-[#2c241a]">
+                            Scene: {scene.title}
+                          </h4>
+                          <span className="text-[10px] font-mono opacity-40 uppercase ml-auto">ID: {scene.id}</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2">
+                          {scene.dialogue.map((page, pIdx) => {
+                            const pageBgResult = getSceneActiveBackground(scene, pIdx);
+                            return (
+                              <div key={pIdx} className="bg-white border border-[#d4c5b0] p-2 flex gap-4 items-center hover:bg-[#fffcf7] transition-colors shadow-sm">
+                                <div 
+                                  className="w-24 aspect-video bg-gray-100 rounded border border-[#d4c5b0] shrink-0 overflow-hidden relative cursor-pointer group"
+                                  onClick={() => pageBgResult.url && setLightboxImage(pageBgResult.url)}
+                                >
+                                  {pageBgResult.url ? (
+                                    <img 
+                                      src={pageBgResult.url} 
+                                      alt="Background" 
+                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                      referrerPolicy="no-referrer"
+                                      onError={(e) => {
+                                        console.warn("Preview image failed to load:", pageBgResult.url);
+                                        const target = e.target as HTMLImageElement;
+                                        // Avoid infinite loops
+                                        if (target.src.includes('picsum.photos')) return;
+                                        target.src = `https://picsum.photos/seed/${scene.id}_${pIdx}/1920/1080?blur=5`;
+                                      }}
+                                    />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-gray-300">
+                                      <ImageIcon className="w-4 h-4" />
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-3 mb-1">
+                                    <span className="text-[9px] font-bold text-[#8b7355] border border-[#d4c5b0] px-1.5 py-0.5 rounded uppercase">
+                                      Page {pIdx + 1}
+                                    </span>
+                                    <div className="text-[9px] uppercase tracking-widest flex items-center gap-1.5">
+                                      <span className="opacity-40 font-bold">Source:</span>
+                                      {getBackgroundSourceLabel(pageBgResult.source)}
+                                      {pageBgResult.source === 'USER_ASSIGNED_IMAGE' && (
+                                        <button 
+                                          onClick={() => handleClearAssignment(scene, pIdx)}
+                                          className="flex items-center gap-0.5 text-red-500 hover:text-red-700 font-bold ml-1 px-1.5 py-0.5 bg-red-50 border border-red-100 rounded"
+                                          title="Clear Assignment"
+                                        >
+                                          <X className="w-2.5 h-2.5" /> Clear
+                                        </button>
+                                      )}
+                                      <button 
+                                        onClick={() => setAssigningTo({ scene, pIdx })}
+                                        className="flex items-center gap-0.5 text-blue-600 hover:text-blue-800 font-bold ml-1 px-1.5 py-0.5 bg-blue-50 border border-blue-100 rounded"
+                                      >
+                                        <Plus className="w-2.5 h-2.5" /> Assign
+                                      </button>
+                                    </div>
+                                    <span className="text-[10px] font-mono opacity-40 uppercase ml-auto">
+                                      {scene.background.split('/').pop()}
+                                    </span>
+                                  </div>
+                                  <div className="flex gap-2 items-start">
+                                    {page.characterId && (
+                                      <span className="text-[10px] font-bold text-[#2c241a] shrink-0 font-serif border-r border-[#d4c5b0] pr-2">
+                                        {novelData.characters[page.characterId]?.name || page.characterId}:
+                                      </span>
+                                    )}
+                                    <p className="text-[11px] text-gray-600 line-clamp-1 italic">
+                                      "{page.text}"
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : novelData && (
+              <div className="bg-white border border-[#d4c5b0] p-4 flex flex-col md:flex-row gap-6">
+                <div className="md:w-1/2 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-widest text-[#8b7355]">Active Background</span>
+                    <div className="flex items-center gap-3">
+                      {novelData && (
+                        <>
+                          {activeBackgroundResult.source === 'USER_ASSIGNED_IMAGE' && (
+                            <button 
+                              onClick={() => handleClearAssignment(novelData.chapters[selectedChapterIdx].scenes[selectedSceneIdx], selectedPageIdx)}
+                              className="text-[10px] text-red-600 font-bold uppercase tracking-widest flex items-center gap-1 hover:underline"
+                            >
+                              <X className="w-3 h-3" /> Clear Manual
+                            </button>
+                          )}
+                          <button
+                            onClick={() => onUpdateAssetVersion(Date.now())}
+                            className="text-[10px] text-gray-600 font-bold uppercase tracking-widest flex items-center gap-1 hover:underline shadow-sm px-2 py-1 bg-white border border-gray-200 rounded"
+                            title="Force reload image from server"
+                          >
+                            <RefreshCw className="w-3 h-3" /> Refresh
+                          </button>
+                          <button 
+                            onClick={() => setAssigningTo({ 
+                              scene: novelData.chapters[selectedChapterIdx].scenes[selectedSceneIdx], 
+                              pIdx: selectedPageIdx 
+                            })}
+                            className="text-[10px] text-blue-600 font-bold uppercase tracking-widest flex items-center gap-1 hover:underline shadow-sm px-2 py-1 bg-blue-50 border border-blue-100 rounded"
+                          >
+                            <Plus className="w-3 h-3" /> Assign New
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div 
+                    className="aspect-video bg-gray-100 border border-dashed border-[#d4c5b0] flex items-center justify-center overflow-hidden relative cursor-pointer group"
+                    onClick={() => activeBackgroundUrl && setLightboxImage(activeBackgroundUrl)}
+                  >
+                    {activeBackgroundUrl ? (
+                      <img 
+                        src={activeBackgroundUrl} 
+                        alt="Preview" 
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          console.warn("Active preview image failed to load:", activeBackgroundUrl);
+                          const target = e.target as HTMLImageElement;
+                          if (target.src.includes('picsum.photos')) return;
+                          target.src = `https://picsum.photos/seed/active_${novelData?.chapters?.[selectedChapterIdx]?.scenes?.[selectedSceneIdx]?.id}_${selectedPageIdx}/1920/1080?blur=5`;
+                        }}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-gray-400">
+                        <ImageIcon className="w-8 h-8" />
+                        <span className="text-xs italic">No resolved background</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex-1 space-y-4">
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Dialogue Preview</span>
+                    <div className="p-3 bg-gray-50 border border-gray-100 italic text-sm text-gray-600 leading-relaxed min-h-[60px]">
+                      "{novelData.chapters?.[selectedChapterIdx]?.scenes?.[selectedSceneIdx]?.dialogue?.[selectedPageIdx]?.text}"
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Assignment Logic</span>
+                    <p className="text-[11px] text-gray-500 leading-tight">
+                      Background Key: <code className="bg-gray-100 px-1 rounded">{novelData.chapters?.[selectedChapterIdx]?.scenes?.[selectedSceneIdx]?.background}</code>
+                    </p>
+                    <p className="text-[11px] text-gray-500 mt-1 flex items-center gap-2">
+                       <span className="opacity-50">RESOLVED FROM:</span>
+                       {getBackgroundSourceLabel(activeBackgroundResult.source)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ) : activeTab === 'voices' ? (
           <div className="flex-1 flex flex-col space-y-6 overflow-hidden">
@@ -1458,10 +1807,10 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
               {promptScope === 'scene' && selectedSceneData && (
                 <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-white border border-[#d4c5b0] rounded">
                   <div className="space-y-4">
-                    <div className="aspect-video bg-gray-100 border border-[#d4c5b0] overflow-hidden relative cursor-pointer group" onClick={() => activeBackgroundUrl && setLightboxImage(`${activeBackgroundUrl}&t=${assetVersion}`)}>
+                    <div className="aspect-video bg-gray-100 border border-[#d4c5b0] overflow-hidden relative cursor-pointer group" onClick={() => activeBackgroundUrl && setLightboxImage(activeBackgroundUrl)}>
                       {activeBackgroundUrl ? (
                         <img 
-                          src={`${activeBackgroundUrl}&t=${assetVersion}`} 
+                          src={activeBackgroundUrl} 
                           alt="Current Background" 
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           referrerPolicy="no-referrer"
@@ -1555,6 +1904,90 @@ export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpd
           </div>
         )}
       </div>
+
+      {/* Background Assignment Modal */}
+      <AnimatePresence>
+        {assigningTo && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden rounded-lg border border-[#d4c5b0]"
+            >
+              <div className="p-4 border-b border-[#d4c5b0] flex items-center justify-between bg-[#fdfbf7]">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-[#8b7355] text-white flex items-center justify-center rounded">
+                    <ImageIcon className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-serif font-bold text-[#2c241a]">Assign Background Asset</h2>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">
+                      Target: {assigningTo.scene.title} / Page {assigningTo.pIdx + 1}
+                    </p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setAssigningTo(null)} 
+                  className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <X className="w-6 h-6 text-gray-400" />
+                </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar bg-[#faf7f2]">
+                {assets.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center p-24 text-gray-400">
+                    <ImageIcon className="w-16 h-16 mb-4 opacity-20" />
+                    <p className="italic text-sm">No custom assets found. Upload or generate some in the "Backgrounds" tab first.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
+                    {assets.map((asset) => (
+                      <div 
+                        key={asset.key} 
+                        className="group relative aspect-video bg-gray-100 border-2 border-transparent hover:border-[#8b7355] overflow-hidden cursor-pointer transition-all shadow-md hover:shadow-xl"
+                        onClick={() => handleAssignBackground(asset.url)}
+                      >
+                        <img 
+                          src={`${asset.url}&t=${assetVersion}`} 
+                          alt={asset.key} 
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-[#8b7355]/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                          <div className="bg-white text-[#8b7355] px-4 py-2 text-[10px] font-bold uppercase tracking-widest shadow-2xl transform translate-y-2 group-hover:translate-y-0 transition-transform">
+                            Select This Asset
+                          </div>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 bg-black/60 backdrop-blur-sm p-2">
+                           <p className="text-[10px] text-white truncate font-mono tracking-tighter">{asset.key.split('/').pop()}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <div className="p-4 border-t border-[#d4c5b0] flex justify-between items-center bg-white">
+                <span className="text-[11px] text-gray-500 italic">Showing {assets.length} available assets for this novel.</span>
+                <Button 
+                  onClick={() => setAssigningTo(null)}
+                  variant="outline"
+                  className="border-[#d4c5b0] text-gray-600 font-bold uppercase tracking-widest text-[10px] h-10 px-8"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Overwrite Confirmation Modal */}
       <AnimatePresence>
