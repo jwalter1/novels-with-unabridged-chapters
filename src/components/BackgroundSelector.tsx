@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { X, Check, Sparkles, Loader2, ChevronDown, Edit3, Trash2 } from 'lucide-react';
+import { X, Check, Sparkles, Loader2, ChevronDown, Edit3, Trash2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { generateImage, uploadToS3, uploadMetadata } from '../services/imageService';
 import { loadNovelPromptConfig, loadScenePromptConfig } from '../services/promptsService';
@@ -24,6 +24,7 @@ interface BackgroundSelectorProps {
   onReset: (sceneId: string) => void;
   onResetPage?: (sceneId: string, pageIndex: number) => void;
   onDelete: (type: 'scene' | 'page' | 'all' | 'history', id: string, pageIndex?: number, url?: string) => void;
+  onRefresh?: () => Promise<void>;
   novelId?: string;
 }
 
@@ -41,9 +42,11 @@ export function BackgroundSelector({
   onReset,
   onResetPage,
   onDelete,
+  onRefresh,
   novelId = 'great-gatsby'
 }: BackgroundSelectorProps) {
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState(currentSceneId);
   const [selectedPageIndex, setSelectedPageIndex] = useState(currentPageIndex);
   const [scope, setScope] = useState<'scene' | 'page'>('page');
@@ -95,6 +98,18 @@ export function BackgroundSelector({
   }, [chapters]);
 
   const selectedScene = allScenes.find(s => s.id === selectedSceneId) || allScenes.find(s => s.id === currentSceneId) || allScenes[0] || null;
+
+  const handleRefresh = async () => {
+    if (!onRefresh) return;
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const sanitizeS3Url = (url: string) => {
     if (url && url.includes('amazonaws.com')) {
@@ -182,7 +197,7 @@ export function BackgroundSelector({
           contextSnippet = contextSnippet.substring(0, 300);
         }
         
-        setCustomPrompt(`A cinematic empty background scene (no characters) from ${novelTitle}, ${chapterNum}: ${selectedScene.title}. ${contextSnippet}... ${stylePrompt}`);
+        setCustomPrompt(`From ${novelTitle}, ${chapterNum}: ${selectedScene.title}. ${contextSnippet}... ${stylePrompt}`);
       }
     };
     
@@ -226,9 +241,9 @@ export function BackgroundSelector({
 
         onGeneratePage?.(selectedScene.id, selectedPageIndex, url);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Generation failed:", error);
-      alert("Failed to generate background. Please try again.");
+      alert(`Failed to generate background. ${error?.message || "Please try again."}`);
     } finally {
       setIsGenerating(false);
     }
@@ -255,8 +270,20 @@ export function BackgroundSelector({
         {/* Header */}
         <div className="p-6 border-b border-[#d4c5b0] bg-[#f5f0e5]">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-            <div className="flex flex-col gap-1">
-              <h2 className="text-2xl font-bold font-serif text-[#2c241a] mb-2">Asset Manager</h2>
+            <div className="flex flex-col gap-1 min-w-0">
+              <div className="flex items-center gap-3">
+                <h2 className="text-2xl font-bold font-serif text-[#2c241a]">Asset Manager</h2>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="h-8 w-8 text-[#8b7355] hover:bg-[#8b7355] hover:text-white rounded-none border border-[#d4c5b0]"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || !onRefresh}
+                  title="Sync with S3"
+                >
+                  <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
+                </Button>
+              </div>
               
               <div className="flex items-center gap-3">
                 {/* Scope Toggle */}

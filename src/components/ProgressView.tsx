@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { X, CheckCircle2, Circle, Trash2, AlertCircle } from 'lucide-react';
+import { X, CheckCircle2, Circle, Trash2, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -17,11 +17,25 @@ interface ProgressViewProps {
   onClose: () => void;
   onJumpTo: (chapterIndex: number, sceneIndex: number) => void;
   onReset: () => void;
+  onRefresh?: () => Promise<void>;
 }
 
-export function ProgressView({ novelId, chapters, version, onClose, onJumpTo, onReset }: ProgressViewProps) {
+export function ProgressView({ novelId, chapters, version, onClose, onJumpTo, onReset, onRefresh }: ProgressViewProps) {
   const [isConfirmingReset, setIsConfirmingReset] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const bookCompletion = getBookCompletion(novelId, chapters, version);
+
+  const handleRefresh = async () => {
+    if (!onRefresh) return;
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const getCompletionColor = (percent: number) => {
     if (percent === 0) return 'bg-gray-100 text-gray-400';
@@ -75,6 +89,17 @@ export function ProgressView({ novelId, chapters, version, onClose, onJumpTo, on
             </div>
           </div>
           <div className="flex items-center gap-2 mt-1">
+            <Button 
+              variant="outline" 
+              size="icon" 
+              className="h-9 w-9 border-gray-200 rounded-none bg-white text-gray-500 hover:text-gray-900"
+              onClick={handleRefresh}
+              disabled={isRefreshing || !onRefresh}
+              title="Refresh Progress"
+            >
+              <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
+            </Button>
+
             {isConfirmingReset ? (
               <div className="flex items-center gap-2 bg-red-50 p-1 px-2 border border-red-200 rounded-md">
                 <AlertCircle className="w-4 h-4 text-red-500" />

@@ -1,5 +1,6 @@
-import { db, doc, setDoc, getDoc, handleFirestoreError, OperationType } from '../firebase';
+import { db, doc, setDoc, deleteDoc, getDoc, getDocFromServer, handleFirestoreError, OperationType } from '../firebase';
 import { NOVELS_METADATA } from '../data/novels/metadata';
+import { getNovelData } from '../data/bookData';
 
 export interface ProgressData {
   sceneProgress: Record<string, number>; // key: "chapterIndex:sceneIndex", value: maxDialogueIndexReached
@@ -55,13 +56,20 @@ export async function syncProgressToCloud(uid: string, novelId: string, progress
   const novelKey = novelId + (version ? `_${version}` : '');
   const path = `users/${uid}/progress/${novelKey}`;
   try {
+    // If progress is empty, delete the document to ensure a true clean state across browsers
+    if (Object.keys(progress.sceneProgress).length === 0) {
+      await deleteDoc(doc(db, path));
+      return;
+    }
+
+    // Otherwise, overwrite entirely without merge so deletions/resets propagate
     await setDoc(doc(db, path), {
       ...progress,
       uid,
       novelId,
       version: version || 'abridged',
       updatedAt: new Date().toISOString()
-    }, { merge: true });
+    });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -72,23 +80,21 @@ export async function loadProgressFromCloud(uid: string, novelId: string, versio
   const path = `users/${uid}/progress/${novelKey}`;
   try {
     const docRef = doc(db, path);
-    const docSnap = await getDoc(docRef);
+    // User requested progress to not be cached by Firestore locally
+    const docSnap = await getDocFromServer(docRef);
     if (docSnap.exists()) {
       const cloudProgress = docSnap.data() as ProgressData;
-      // Merge with local progress (take max dialogue index for each scene)
-      const localProgress = getProgress(novelId, version);
-      const mergedProgress: ProgressData = {
-        sceneProgress: { ...localProgress.sceneProgress },
-        lastPosition: cloudProgress.lastPosition || localProgress.lastPosition,
-        updatedAt: cloudProgress.updatedAt || localProgress.updatedAt
-      };
       
-      Object.entries(cloudProgress.sceneProgress).forEach(([key, val]) => {
-        mergedProgress.sceneProgress[key] = Math.max(mergedProgress.sceneProgress[key] || 0, val);
-      });
-      
-      localStorage.setItem(getNovelKey(novelId, version), JSON.stringify(mergedProgress));
-      return mergedProgress;
+      // We directly overwrite the local cache with the cloud truth
+      // to prevent "undeletable" progress that keeps coming back from local maxing
+      localStorage.setItem(getNovelKey(novelId, version), JSON.stringify(cloudProgress));
+      return cloudProgress;
+    } else {
+      // If the document does not exist gracefully clear the local cache 
+      // this enables resetting progress from one browser to be reflected in another
+      const emptyProgress: ProgressData = { sceneProgress: {} };
+      localStorage.setItem(getNovelKey(novelId, version), JSON.stringify(emptyProgress));
+      return emptyProgress;
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
@@ -139,21 +145,47 @@ export function resetProgress(novelId: string, uid?: string, version?: string) {
   }
 }
 
-export function getTotalPagesRead(): number {
+export async function syncAllProgressFromCloud(uid: string, allMetadata: any[]) {
+  try {
+    const promises: Promise<any>[] = [];
+    allMetadata.forEach(metadata => {
+      ['abridged', 'unabridged'].forEach(version => {
+        promises.push(loadProgressFromCloud(uid, metadata.id, version));
+      });
+    });
+    await Promise.all(promises);
+  } catch (error) {
+    console.error("Failed to batch sync progress from cloud:", error);
+  }
+}
+
+export async function getTotalPagesRead(): Promise<number> {
   let total = 0;
   
-  // We should only count progress for books that actually exist in our metadata
-  // to stay in sync with the Reading Odyssey archive
-  NOVELS_METADATA.forEach(metadata => {
-    ['abridged', 'unabridged'].forEach(version => {
+  // We strictly iterate through the actual chapters/scenes to bypass orphaned progress keys
+  for (const metadata of NOVELS_METADATA) {
+    for (const version of ['abridged', 'unabridged']) {
       const progress = getProgress(metadata.id, version);
-      if (progress && progress.sceneProgress) {
-        Object.values(progress.sceneProgress).forEach(maxIndex => {
-          total += (maxIndex + 1);
-        });
+      if (progress && progress.sceneProgress && Object.keys(progress.sceneProgress).length > 0) {
+        try {
+          const novelData = await getNovelData(metadata.id, version as any);
+          if (novelData) {
+            novelData.chapters.forEach((chapter, chIdx) => {
+              chapter.scenes.forEach((scene, scIdx) => {
+                const key = `${chIdx}:${scIdx}`;
+                const maxDialogue = progress.sceneProgress[key];
+                if (maxDialogue !== undefined) {
+                  total += (maxDialogue + 1);
+                }
+              });
+            });
+          }
+        } catch (e) {
+          console.error(`Failed to load novel data for pages count: ${metadata.id}`, e);
+        }
       }
-    });
-  });
+    }
+  }
   
   return total;
 }

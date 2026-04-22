@@ -15,6 +15,7 @@ interface ReadSummaryModalProps {
   onClose: () => void;
   onJumpTo?: (novelId: string, version: BookVersion, chapterIndex: number, sceneIndex: number) => void;
   user: User | null;
+  onRefresh?: () => Promise<void>;
 }
 
 interface SceneProgressInfo {
@@ -34,9 +35,10 @@ interface NovelSummary {
   readScenes: SceneProgressInfo[];
 }
 
-export function ReadSummaryModal({ isOpen, onClose, onJumpTo, user }: ReadSummaryModalProps) {
+export function ReadSummaryModal({ isOpen, onClose, onJumpTo, user, onRefresh }: ReadSummaryModalProps) {
   const [summaries, setSummaries] = useState<NovelSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   const totalOverallPages = summaries.reduce((sum, item) => sum + item.totalPagesRead, 0);
@@ -63,6 +65,19 @@ export function ReadSummaryModal({ isOpen, onClose, onJumpTo, user }: ReadSummar
     if (confirm('Are you sure you want to reset ALL your reading progress? This cannot be undone.')) {
       resetAllProgress(user?.uid);
       await loadSummaries();
+    }
+  };
+
+  const handleRefresh = async () => {
+    if (!onRefresh) return;
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+      await loadSummaries();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -155,14 +170,26 @@ export function ReadSummaryModal({ isOpen, onClose, onJumpTo, user }: ReadSummar
                   <p className="text-[10px] uppercase tracking-widest opacity-50 font-sans">An indexed history of your literary travels</p>
                 </div>
               </div>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                onClick={onClose}
-                className="text-white/70 hover:text-white hover:bg-white/10 rounded-full"
-              >
-                <X className="w-5 h-5" />
-              </Button>
+              <div className="flex flex-row items-center gap-2">
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || !onRefresh}
+                  className="text-white/70 hover:text-white hover:bg-white/10 rounded-full"
+                  title="Refresh progress from cloud"
+                >
+                  <RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={onClose}
+                  className="text-white/70 hover:text-white hover:bg-white/10 rounded-full"
+                >
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
             </div>
 
             {/* Content */}

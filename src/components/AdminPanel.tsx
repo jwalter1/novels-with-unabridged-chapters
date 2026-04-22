@@ -10,6 +10,7 @@ import { saveNovelVoiceConfig, loadNovelVoiceConfig } from '../services/voiceSer
 import { clearVoiceConfigCache, generateSpeech, playAudio, ELEVENLABS_VOICES } from '../services/ttsService';
 import { fetchRawBookText, extractNovelMetadata, extractCharacters, splitIntoChapters, processChapter } from '../services/importService';
 import { saveImportedNovel } from '../services/novelService';
+import { clearStore, clearNovelFromCache } from '../services/cacheService';
 import { NOVEL_THEMES } from '../data/thematicBackgrounds';
 import { NOVELS_METADATA } from '../data/bookData';
 import { getNovelData } from '../data/bookData';
@@ -21,9 +22,11 @@ type Tab = 'generate' | 'browse' | 'prompts' | 'sprites' | 'voices' | 'import';
 interface AdminPanelProps {
   novels?: NovelMetadata[];
   user: User | null;
+  assetVersion: number;
+  onUpdateAssetVersion: (v: number) => void;
 }
 
-export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) {
+export function AdminPanel({ novels = NOVELS_METADATA, user, assetVersion, onUpdateAssetVersion }: AdminPanelProps) {
   const isAdmin = user?.email === 'jwalter1@gmail.com';
 
   const [activeTab, setActiveTab] = useState<Tab>('generate');
@@ -39,7 +42,6 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
   const [regeneratingKeys, setRegeneratingKeys] = useState<Record<string, boolean>>({});
   const [isGeneratingSprites, setIsGeneratingSprites] = useState(false);
   const [spriteResults, setSpriteResults] = useState<{key: string, status: 'pending' | 'success' | 'error' | 'skipped', message?: string}[]>([]);
-  const [assetVersion, setAssetVersion] = useState(Date.now());
 
   // Prompt Management
   const [promptScope, setPromptScope] = useState<'global' | 'scene'>('global');
@@ -62,6 +64,9 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
   // Metadata view
   const [selectedAssetMetadata, setSelectedAssetMetadata] = useState<any | null>(null);
   const [isFetchingMetadata, setIsFetchingMetadata] = useState(false);
+  const [isDeletingAllSprites, setIsDeletingAllSprites] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+  const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
   const [metadataViewKey, setMetadataViewKey] = useState<string | null>(null);
 
   const addImportLog = (msg: string) => setImportLog(prev => [...prev.slice(-100), `${new Date().toLocaleTimeString()} - ${msg}`]);
@@ -160,7 +165,7 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
       );
       
       setAssets(filteredItems);
-      setAssetVersion(Date.now());
+      onUpdateAssetVersion(Date.now());
     } catch (error) {
       console.error("Failed to fetch assets:", error);
     } finally {
@@ -245,6 +250,27 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
       setIsFetchingVoices(false);
     }
   };
+
+  const handleRefreshTab = useCallback(async () => {
+    switch (activeTab) {
+      case 'browse':
+        await fetchAssets();
+        break;
+      case 'sprites':
+        await fetchSprites();
+        break;
+      case 'prompts':
+        await fetchPrompt();
+        break;
+      case 'voices':
+        await fetchVoices();
+        break;
+      case 'generate':
+        const data = await getNovelData(novelId);
+        setNovelData(data);
+        break;
+    }
+  }, [activeTab, fetchAssets, fetchSprites, fetchPrompt, fetchVoices, novelId]);
 
   const handleSaveVoices = async () => {
     setIsSavingVoices(true);
@@ -351,11 +377,11 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
       if (assetKey.includes('/fallbacks/')) {
         const parts = assetKey.split('/');
         const filename = parts[parts.length - 1].replace('.png', '').replace(/_/g, ' ');
-        prompt = `A cinematic empty background scene (no characters) from ${novelTitle}: ${filename}. ${stylePrompt}`;
+        prompt = `From ${novelTitle}: ${filename}. ${stylePrompt}`;
       } else {
         // For custom/manual ones, use filename as hint
         const filename = assetKey.split('/').pop()?.split('_').pop()?.replace('.png', '').replace(/_/g, ' ') || "a background scene";
-        prompt = `A cinematic empty background scene (no characters) from ${novelTitle}: ${filename}. ${stylePrompt}`;
+        prompt = `From ${novelTitle}: ${filename}. ${stylePrompt}`;
       }
 
       console.log(`Regenerating ${assetKey} with prompt:`, prompt);
@@ -371,10 +397,11 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
       }
       
       // Force refresh the image in the UI by appending a cache buster or re-fetching
+      onUpdateAssetVersion(Date.now());
       await fetchAssets();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Regeneration failed:", error);
-      alert("Failed to regenerate asset");
+      alert(`Failed to regenerate asset. ${error?.message || "Please try again."}`);
     } finally {
       setRegeneratingKeys(prev => ({ ...prev, [assetKey]: false }));
     }
@@ -417,7 +444,7 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
 
       while (retries > 0 && !success) {
         try {
-          const prompt = `A cinematic empty background scene (no characters) from ${novelTitle}: ${key.replace(/_/g, ' ')}. ${stylePrompt}`;
+          const prompt = `From ${novelTitle}: ${key.replace(/_/g, ' ')}. ${stylePrompt}`;
           const base64 = await generateImage(prompt);
           await uploadToS3(s3Path, base64);
           
@@ -449,7 +476,37 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     setIsGenerating(false);
+    // Invalidate caches
+    onUpdateAssetVersion(Date.now());
     if (activeTab === 'browse') fetchAssets();
+  };
+
+  const handleClearBrowserCache = async () => {
+    if (!novelId) return;
+    setIsClearingCache(true);
+    try {
+      console.log(`Clearing browser cache for novel: ${novelId}`);
+      
+      // 1. Clear IndexedDB entries for this novel
+      await clearNovelFromCache(novelId);
+      
+      // 2. Clear voice config cache in memory
+      clearVoiceConfigCache(novelId);
+      
+      // 3. Update asset version to bust browser image cache
+      onUpdateAssetVersion(Date.now());
+      
+      // 4. Clear any specific localStorage if we identified any novel-specific ones
+      // For now, these are the main ones:
+      localStorage.removeItem(`novel_config_${novelId}`);
+      
+      alert(`Cache cleared for ${novelId}. Fresh assets and configs will be retrieved on next load.`);
+    } catch (error) {
+      console.error("Failed to clear cache:", error);
+      alert("Error clearing cache");
+    } finally {
+      setIsClearingCache(false);
+    }
   };
 
   const handleDeleteAsset = async (key: string) => {
@@ -472,10 +529,69 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
       setSprites(prev => prev.filter(a => a.key !== key));
       
       // Refresh version to clear caches
-      setAssetVersion(prev => prev + 1);
+      onUpdateAssetVersion(Date.now());
     } catch (error: any) {
       console.error("Failed to delete asset:", error);
       alert(`Failed to delete asset: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleDeleteAllSprites = async () => {
+    console.log("handleDeleteAllSprites called. Sprites count:", sprites.length);
+    if (!sprites.length) {
+      console.warn("No sprites to delete.");
+      return;
+    }
+    
+    const confirmMessage = `Are you sure you want to delete ALL ${sprites.length} sprites for this novel? This cannot be undone.`;
+    if (!window.confirm(confirmMessage)) {
+      console.log("User cancelled bulk deletion.");
+      return;
+    }
+    
+    setIsDeletingAllSprites(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    try {
+      // Create a local copy to avoid closure issues with state
+      const spritesToDelete = [...sprites];
+      
+      for (const sprite of spritesToDelete) {
+        try {
+          console.log(`Deleting sprite: ${sprite.key}`);
+          await deleteS3Object(sprite.key);
+          
+          // Also attempt to delete metadata
+          const metaKey = sprite.key.replace('.png', '.json');
+          try {
+            await deleteS3Object(metaKey);
+          } catch (e) {
+            // Metadata might not exist
+          }
+          successCount++;
+        } catch (err) {
+          console.error(`Failed to delete ${sprite.key}:`, err);
+          failCount++;
+        }
+      }
+      
+      // Refresh the local state
+      await fetchSprites();
+      
+      // Refresh version to clear caches
+      onUpdateAssetVersion(Date.now());
+      
+      if (failCount === 0) {
+        alert(`Successfully deleted all ${successCount} sprites.`);
+      } else {
+        alert(`Deleted ${successCount} sprites, but ${failCount} failed. Check console for details.`);
+      }
+    } catch (error: any) {
+      console.error("Failed in handleDeleteAllSprites loop:", error);
+      alert(`Critical error during bulk deletion: ${error.message || 'Unknown error'}`);
+    } finally {
+      setIsDeletingAllSprites(false);
     }
   };
 
@@ -494,83 +610,108 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
     }
   };
 
-  const handleGenerateAllSprites = async () => {
-    if (!novelData) return;
+  const handleBatchGenerateSprites = async (overwrite: boolean = false) => {
+    console.log("handleBatchGenerateSprites called", { overwrite, hasNovelData: !!novelData, novelId });
+    if (!novelData) {
+      console.warn("Cannot start generation: novelData is null");
+      alert("Novel data is not loaded yet. Please wait or refresh.");
+      return;
+    }
     
     const metadata = novels.find(n => n.id === novelId);
-    if (!metadata) return;
+    if (!metadata) {
+      console.error("Critical: Metadata not found for novelId", novelId);
+      return;
+    }
+    
     const config = await loadNovelPromptConfig(novelId);
     const bookStyle = config?.stylePrompt || metadata?.stylePrompt || 'Detailed line art style, period-accurate clothing, neutral background.';
     
     const characters = Object.entries(novelData.characters);
+    console.log(`Starting batch generation for ${characters.length} characters`);
+    
     setIsGeneratingSprites(true);
     const initialResults = characters.map(([id, char]) => ({ key: id, status: 'pending' as const }));
     setSpriteResults(initialResults);
 
-    for (let i = 0; i < characters.length; i++) {
-      const [charId, char]: [string, any] = characters[i];
-      const s3Path = `novels/${novelId}/sprites/${charId}.png`;
+    try {
+      for (let i = 0; i < characters.length; i++) {
+        const [charId, char]: [string, any] = characters[i];
+        const s3Path = `novels/${novelId}/sprites/${charId}.png`;
 
-      try {
-        const { exists } = await checkS3Exists(s3Path);
-        if (exists) {
-          setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'skipped' } : r));
-          continue;
-        }
-      } catch (error) {
-        console.warn(`Existence check failed for ${charId}`);
-      }
-
-      let prompt = `A high-quality illustration of ${char.name} from the novel "${novelData.metadata.title}", ${char.description || ''} ${bookStyle} Neutral background.`;
-      
-      // Special cases from App.tsx
-      if (charId === "gatsby") {
-        prompt = `A high-quality 1920s Jazz Age illustration of Jay Gatsby, a fabulously wealthy young man with a charismatic smile, wearing an elegant suit, Roaring Twenties style, ${bookStyle} Neutral background.`;
-      } else if (charId === "nick") {
-        prompt = `A high-quality 1920s Jazz Age illustration of Nick Carraway, a young man with a reserved and observant expression, wearing a modest brown suit, Roaring Twenties style, ${bookStyle} Neutral background.`;
-      } else if (charId === "daisy") {
-        prompt = `A high-quality 1920s Jazz Age illustration of Daisy Buchanan, a beautiful socialite with a delicate face, wearing a white flapper dress and pearls, Roaring Twenties style, ${bookStyle} Neutral background.`;
-      }
-
-      let retries = 3;
-      let delay = 2000;
-      let success = false;
-
-      while (retries > 0 && !success) {
-        try {
-          const base64 = await generateImage(prompt, { aspectRatio: "3:4" });
-          await uploadToS3(s3Path, base64);
-
-          // Save prompt metadata
+        if (!overwrite) {
           try {
-            const metaKey = s3Path.replace('.png', '.json');
-            await uploadMetadata(metaKey, { prompt, generatedAt: new Date().toISOString(), novelId, charId });
-          } catch (e) {
-            console.warn("Failed to save sprite prompt metadata:", e);
-          }
-
-          setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'success' } : r));
-          success = true;
-        } catch (error: any) {
-          if (error.status === 429 || error.message?.includes('quota')) {
-            await new Promise(resolve => setTimeout(resolve, delay));
-            delay *= 2;
-            retries--;
-          } else {
-            setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'error', message: error.message } : r));
-            break;
+            const { exists } = await checkS3Exists(s3Path);
+            if (exists) {
+              setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'skipped' } : r));
+              continue;
+            }
+          } catch (error) {
+            console.warn(`Existence check failed for ${charId}`, error);
           }
         }
-      }
 
-      if (!success && retries === 0) {
-        setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'error', message: 'Maximum retries exceeded (Quota)' } : r));
+        console.log(`Generating sprite for ${charId}...`);
+        let prompt = `A high-quality illustration of ${char.name} from the novel "${novelData.metadata.title}", ${char.description || ''} ${bookStyle} Neutral background.`;
+        
+        // Special cases
+        if (charId === "gatsby") {
+          prompt = `A high-quality 1920s Jazz Age illustration of Jay Gatsby, a fabulously wealthy young man with a charismatic smile, wearing an elegant suit, Roaring Twenties style, ${bookStyle} Neutral background.`;
+        } else if (charId === "nick") {
+          prompt = `A high-quality 1920s Jazz Age illustration of Nick Carraway, a young man with a reserved and observant expression, wearing a modest brown suit, Roaring Twenties style, ${bookStyle} Neutral background.`;
+        } else if (charId === "daisy") {
+          prompt = `A high-quality 1920s Jazz Age illustration of Daisy Buchanan, a beautiful socialite with a delicate face, wearing a white flapper dress and pearls, Roaring Twenties style, ${bookStyle} Neutral background.`;
+        }
+
+        let retries = 3;
+        let delay = 2000;
+        let success = false;
+
+        while (retries > 0 && !success) {
+          try {
+            const base64 = await generateImage(prompt, { aspectRatio: "3:4" });
+            await uploadToS3(s3Path, base64);
+
+            try {
+              const metaKey = s3Path.replace('.png', '.json');
+              await uploadMetadata(metaKey, { prompt, generatedAt: new Date().toISOString(), novelId, charId });
+            } catch (e) {
+              console.warn("Failed to save sprite prompt metadata:", e);
+            }
+
+            setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'success' } : r));
+            success = true;
+          } catch (error: any) {
+            console.error(`Error generating sprite for ${charId}:`, error);
+            if (error.status === 429 || error.message?.includes('quota')) {
+              console.log(`Quota hit, retrying in ${delay}ms...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              delay *= 2;
+              retries--;
+            } else {
+              setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'error', message: error.message } : r));
+              break;
+            }
+          }
+        }
+
+        if (!success && retries === 0) {
+          setSpriteResults(prev => prev.map(r => r.key === charId ? { ...r, status: 'error', message: 'Maximum retries exceeded (Quota)' } : r));
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
       }
-      // Small delay between generations to avoid hitting rate limits too fast
-      await new Promise(resolve => setTimeout(resolve, 1500));
+    } catch (err) {
+      console.error("Critical error in batch generation loop:", err);
+    } finally {
+      setIsGeneratingSprites(false);
+      // Invalidate all related caches
+      onUpdateAssetVersion(Date.now());
+      clearVoiceConfigCache(novelId);
+      await clearStore('sprites');
+      
+      fetchSprites();
+      console.log("Batch generation complete, caches cleared");
     }
-    setIsGeneratingSprites(false);
-    fetchSprites();
   };
 
   const handleImportBook = async () => {
@@ -748,13 +889,41 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
                 <option key={n.id} value={n.id}>{n.title}</option>
               ))}
             </select>
-            {(activeTab === 'browse' || activeTab === 'sprites') && (
-              <Button onClick={activeTab === 'browse' ? fetchAssets : fetchSprites} variant="outline" size="icon" className="h-9 w-9 border-[#d4c5b0]">
-                <RefreshCw className={`w-4 h-4 ${(isFetching || isFetchingSprites) ? 'animate-spin' : ''}`} />
+            {(activeTab === 'browse' || activeTab === 'sprites' || activeTab === 'prompts' || activeTab === 'voices') && (
+              <Button 
+                onClick={handleRefreshTab} 
+                variant="outline" 
+                size="icon" 
+                className="h-9 w-9 border-[#d4c5b0]"
+                title="Refresh from remote"
+              >
+                <RefreshCw className={cn("w-4 h-4", (isFetching || isFetchingSprites || isFetchingPrompt || isFetchingVoices) && "animate-spin")} />
               </Button>
             )}
           </div>
         </div>
+
+        {activeTab !== 'import' && (
+          <div className="mb-6 bg-white border border-[#d4c5b0] p-4 flex items-center justify-between shadow-sm">
+            <div className="flex flex-col">
+              <span className="text-xs font-bold uppercase tracking-widest text-red-600">Global Cache Management</span>
+              <span className="text-[10px] text-gray-500 italic">Force fresh asset retrieval and clear local storage for <strong>{novelId}</strong></span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-mono opacity-40 uppercase">v{assetVersion}</span>
+              <Button 
+                onClick={handleClearBrowserCache}
+                disabled={isClearingCache}
+                variant="outline"
+                size="sm"
+                className="border-red-200 text-red-600 hover:bg-red-50 rounded-none h-8 px-4 text-[10px] uppercase tracking-widest font-bold"
+              >
+                {isClearingCache ? <Loader2 className="w-3 h-3 animate-spin mr-2" /> : <RefreshCw className="w-3 h-3 mr-2" />}
+                Clear Novel Cache
+              </Button>
+            </div>
+          </div>
+        )}
 
         {activeTab === 'generate' ? (
           <div className="space-y-6">
@@ -1011,14 +1180,25 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
                 <p className="text-sm text-gray-600 mb-6 leading-relaxed">
                   Generate missing character portraits using AI. This uses the book's global style prompt and character descriptions.
                 </p>
-                <Button 
-                  onClick={handleGenerateAllSprites}
-                  disabled={isGeneratingSprites}
-                  className="w-full h-10 bg-[#8b7355] hover:bg-[#7a654a] text-white font-bold tracking-widest uppercase text-xs"
-                >
-                  {isGeneratingSprites ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
-                  Generate All Missing
-                </Button>
+                <div className="flex flex-col gap-2">
+                  <Button 
+                    onClick={() => handleBatchGenerateSprites(false)}
+                    disabled={isGeneratingSprites}
+                    className="w-full h-10 bg-[#8b7355] hover:bg-[#7a654a] text-white font-bold tracking-widest uppercase text-xs"
+                  >
+                    {isGeneratingSprites ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                    Generate Missing
+                  </Button>
+                  <Button 
+                    onClick={() => setShowOverwriteConfirm(true)}
+                    disabled={isGeneratingSprites}
+                    variant="outline"
+                    className="w-full h-10 border-[#8b7355] text-[#8b7355] hover:bg-[#f5f0e5] font-bold tracking-widest uppercase text-xs"
+                  >
+                    {isGeneratingSprites ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                    Generate All (Overwrite)
+                  </Button>
+                </div>
               </div>
 
               <div className="bg-white border border-[#d4c5b0] p-6 rounded-lg">
@@ -1375,6 +1555,54 @@ export function AdminPanel({ novels = NOVELS_METADATA, user }: AdminPanelProps) 
           </div>
         )}
       </div>
+
+      {/* Overwrite Confirmation Modal */}
+      <AnimatePresence>
+        {showOverwriteConfirm && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white border-2 border-[#8b7355] shadow-2xl max-w-md w-full p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mb-6">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <h3 className="text-xl font-serif font-bold text-[#2c241a] mb-4">Bulk Regeneration</h3>
+              <p className="text-sm text-gray-600 mb-8 leading-relaxed">
+                This will regenerate and overwrite **ALL** character portraits for this novel. 
+                Existing sprites will be replaced with new AI-generated versions based on your current style prompt. 
+                This process cannot be undone.
+              </p>
+              <div className="flex gap-3">
+                <Button 
+                  onClick={() => setShowOverwriteConfirm(false)}
+                  variant="outline"
+                  className="flex-1 h-12 border-[#d4c5b0] text-gray-600 font-bold uppercase tracking-widest text-[10px]"
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={() => {
+                    setShowOverwriteConfirm(false);
+                    handleBatchGenerateSprites(true);
+                  }}
+                  className="flex-1 h-12 bg-[#8b7355] hover:bg-[#7a654a] text-white font-bold uppercase tracking-widest text-[10px]"
+                >
+                  Confirm & Overwrite
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Metadata Detail Overlay */}
       <AnimatePresence>

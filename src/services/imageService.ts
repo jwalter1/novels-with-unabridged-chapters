@@ -18,7 +18,14 @@ export async function generateImage(prompt: string, options: { aspectRatio?: "1:
     });
 
     console.log("Gemini response received");
-    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    const candidate = response.candidates?.[0];
+    
+    if (candidate?.finishReason === 'IMAGE_SAFETY' || candidate?.finishReason === 'SAFETY') {
+      console.error("Safety filters triggered for prompt:", prompt);
+      throw new Error("Safety filters triggered. The prompt resulted in an image that violated safety guidelines. Please modify your prompt and try again.");
+    }
+
+    const part = candidate?.content?.parts?.find(p => p.inlineData);
     if (!part || !part.inlineData) {
       console.error("Full Gemini response:", JSON.stringify(response));
       throw new Error("No image data in response. The model might have refused to generate the image or returned text instead.");

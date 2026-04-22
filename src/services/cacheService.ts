@@ -186,6 +186,54 @@ export async function syncBookmarksFromCloud(uid: string, novelId: string): Prom
   }
 }
 
+export async function clearStore(store: 'sprites' | 'audio'): Promise<void> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(store, 'readwrite');
+      const request = transaction.objectStore(store).clear();
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    console.error(`Error clearing ${store}:`, e);
+  }
+}
+
+export async function clearNovelFromCache(novelId: string): Promise<void> {
+  try {
+    const db = await openDB();
+    const stores: ('sprites' | 'audio')[] = ['sprites', 'audio'];
+    
+    for (const storeName of stores) {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = db.transaction(storeName, 'readwrite');
+        const store = transaction.objectStore(storeName);
+        const request = store.openCursor();
+        
+        request.onsuccess = (event: any) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            const key = cursor.key.toString();
+            // Check if key starts with novelId: or involves the novelId in some way.
+            // For audio, we use novelId: prefix.
+            // For sprites, we might need a more complex check if keys aren't strictly prefixed.
+            if (key.startsWith(`${novelId}:`)) {
+              store.delete(cursor.key);
+            }
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        request.onerror = () => reject(request.error);
+      });
+    }
+  } catch (e) {
+    console.error(`Error clearing novel ${novelId} from cache:`, e);
+  }
+}
+
 export async function getAllFromStore(store: 'sprites' | 'audio'): Promise<Record<string, string>> {
   try {
     const db = await openDB();

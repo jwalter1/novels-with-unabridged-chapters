@@ -16,7 +16,7 @@ import { BackgroundSelector } from './components/BackgroundSelector';
 import { AdminPanel } from './components/AdminPanel';
 import { getNovelData, NOVELS_METADATA } from './data/bookData';
 import { Novel, BookVersion } from './types';
-import { updateProgress, loadProgressFromCloud, resetProgress, getProgress } from './services/progressService';
+import { updateProgress, loadProgressFromCloud, resetProgress, getProgress, syncAllProgressFromCloud } from './services/progressService';
 import { AVAILABLE_VOICES, VoiceName, CHARACTER_VOICES } from './services/ttsService';
 import { auth, signInWithPopup, signOut, onAuthStateChanged, googleProvider, User, db, doc, setDoc, handleFirestoreError, OperationType } from './firebase';
 import { LogIn, LogOut } from 'lucide-react';
@@ -60,6 +60,7 @@ export default function App() {
   const [isNovelLoading, setIsNovelLoading] = useState(false);
   const [isGlobalSettingsLoaded, setIsGlobalSettingsLoaded] = useState(false);
   const [selectedNovelId, setSelectedNovelId] = useState<string | null>(null);
+  const [assetVersion, setAssetVersion] = useState(Date.now());
   const [bookVersions, setBookVersions] = useState<Record<string, BookVersion>>(() => {
     const saved = localStorage.getItem('bookVersions');
     return saved ? JSON.parse(saved) : {};
@@ -75,25 +76,64 @@ export default function App() {
   const chapters = novel?.chapters || [];
   const characters = novel?.characters || {};
 
+  const handleRefreshLibrary = useCallback(async () => {
+    try {
+      const importedList = await listImportedNovels();
+      // Merge with NOVELS_METADATA, avoiding duplicates
+      const combined = [...NOVELS_METADATA];
+      importedList.forEach(item => {
+        if (item?.metadata?.id && !combined.some(c => c.id === item.metadata.id)) {
+          combined.push(item.metadata);
+        }
+      });
+      setAllMetadata(combined);
+
+      if (user) {
+        // Load global settings
+        try {
+          const globalSettings = await loadGlobalSettingsFromCloud(user.uid);
+          if (globalSettings?.pinnedNovelIds) setPinnedNovelIds(globalSettings.pinnedNovelIds);
+          
+          // Also sync all reading progress to ensure Library pages so far is accurate
+          await syncAllProgressFromCloud(user.uid, combined);
+        } catch (e) {
+          console.error("Failed to load global settings during refresh:", e);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to refresh library:", error);
+    }
+  }, [user]);
+
   // Fetch imported novels
   useEffect(() => {
-    const fetchImported = async () => {
-      try {
-        const importedList = await listImportedNovels();
-        // Merge with NOVELS_METADATA, avoiding duplicates
-        const combined = [...NOVELS_METADATA];
-        importedList.forEach(item => {
-          if (item?.metadata?.id && !combined.some(c => c.id === item.metadata.id)) {
-            combined.push(item.metadata);
-          }
-        });
-        setAllMetadata(combined);
-      } catch (error) {
-        console.error("Failed to list imported novels:", error);
+    handleRefreshLibrary();
+  }, [handleRefreshLibrary]);
+
+  const handleRefreshProgress = useCallback(async () => {
+    if (!user || !selectedNovelId) return;
+    try {
+      // Load progress
+      const currentVersion = novel?.version || bookVersions[selectedNovelId] || 'abridged';
+      const cloudProgress = await loadProgressFromCloud(user.uid, selectedNovelId, currentVersion);
+      if (cloudProgress?.lastPosition) {
+        setCurrentChapterIndex(cloudProgress.lastPosition.chapterIndex);
+        setCurrentSceneIndex(cloudProgress.lastPosition.sceneIndex);
+        setCurrentDialogueIndex(cloudProgress.lastPosition.dialogueIndex);
       }
-    };
-    fetchImported();
-  }, []);
+      
+      // Sync bookmarks
+      const syncedBookmarks = await syncBookmarksFromCloud(user.uid, selectedNovelId);
+      setBookmarks(syncedBookmarks);
+    } catch (e) {
+      console.error("Failed to refresh progress:", e);
+    }
+  }, [user, selectedNovelId, novel, bookVersions]);
+
+  const handleRefreshAssets = useCallback(async () => {
+    if (!selectedNovelId) return;
+    setAssetVersion(Date.now());
+  }, [selectedNovelId]);
 
   useEffect(() => {
     const loadNovel = async () => {
@@ -689,54 +729,72 @@ export default function App() {
     if (!id) return;
 
     try {
-      // 1. Load Category Backgrounds
-      const prefix = `novels/${id}/backgrounds/`;
-      const bgResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(prefix)}`);
-      if (bgResponse.ok) {
-        const contentType = bgResponse.headers.get("content-type");
-        if (!contentType || !contentType.includes("application/json")) {
-          const text = await bgResponse.text();
-          console.error("Non-JSON response from S3 list (backgrounds):", text.slice(0, 200));
-          return;
+      // 1. Load Category Backgrounds (check both novel-specific and general fallbacks)
+      const overrides: Record<string, string> = {};
+      
+      const prefixes = [
+        `novels/${id}/backgrounds/`,
+        `backgrounds/fallbacks/${id}/`,
+        `novels/${id}/manual/`
+      ];
+
+      for (const prefix of prefixes) {
+        const bgResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(prefix)}&t=${assetVersion || Date.now()}`);
+        if (bgResponse.ok) {
+          const contentType = bgResponse.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const data = await bgResponse.json();
+            if (data.success) {
+              data.items.forEach((item: any) => {
+                const category = item.key.split('/').pop().replace('.png', '');
+                // Overwrite with most recent if duplicates (fallbacks might be older or newer)
+                overrides[category] = item.url;
+              });
+            }
+          }
         }
-        const data = await bgResponse.json();
-        if (data.success) {
-          const overrides: Record<string, string> = {};
-          data.items.forEach((item: any) => {
-            const category = item.key.split('/').pop().replace('.png', '');
-            overrides[category] = item.url;
-          });
+      }
+      
+      if (Object.keys(overrides).length > 0 || id === selectedNovelId) {
+        if (id === selectedNovelId) {
           setBackgroundOverrides(overrides);
         }
       }
 
       // 2. Load Scene-specific Backgrounds
-      const scenePrefix = `novels/${id}/scenes/`;
-      const sceneResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(scenePrefix)}`);
-      if (sceneResponse.ok) {
-        const contentType = sceneResponse.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await sceneResponse.json();
-          if (data.success) {
-            const sceneOverrides: Record<string, string> = {};
-            const sortedItems = [...data.items].sort((a, b) => a.key.localeCompare(b.key));
-            sortedItems.forEach((item: any) => {
-              const filename = item.key.split('/').pop();
-              if (filename && filename.includes('_')) {
-                const sceneId = filename.split('_')[0];
-                sceneOverrides[sceneId] = item.url;
-              }
-            });
-            if (Object.keys(sceneOverrides).length > 0 && id === selectedNovelId) {
-              setSceneImageOverrides(prev => ({ ...prev, ...sceneOverrides }));
+      const scenePrefixes = [
+        `novels/${id}/scenes/`,
+        `scenes/${id}/` // Handle alternative structure if any
+      ];
+
+      const sceneOverrides: Record<string, string> = {};
+      for (const prefix of scenePrefixes) {
+        const sceneResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(prefix)}&t=${assetVersion || Date.now()}`);
+        if (sceneResponse.ok) {
+          const contentType = sceneResponse.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const data = await sceneResponse.json();
+            if (data.success) {
+              const sortedItems = [...data.items].sort((a, b) => a.key.localeCompare(b.key));
+              sortedItems.forEach((item: any) => {
+                const filename = item.key.split('/').pop();
+                if (filename && filename.includes('_')) {
+                  const sceneId = filename.split('_')[0];
+                  sceneOverrides[sceneId] = item.url;
+                }
+              });
             }
           }
         }
       }
 
+      if (id === selectedNovelId) {
+        setSceneImageOverrides(sceneOverrides);
+      }
+
       // 3. Load Page-specific Backgrounds
       const pagePrefix = `novels/${id}/pages/`;
-      const pageResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(pagePrefix)}`);
+      const pageResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(pagePrefix)}&t=${assetVersion || Date.now()}`);
       if (pageResponse.ok) {
         const contentType = pageResponse.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
@@ -760,11 +818,19 @@ export default function App() {
               }
             });
             if (id === selectedNovelId) {
-              if (Object.keys(pageOverrides).length > 0) setPageImageOverrides(prev => ({ ...prev, ...pageOverrides }));
+              setPageImageOverrides(pageOverrides);
               setPageBackgroundHistory(historyMap);
             }
+          } else if (id === selectedNovelId) {
+            // Success but no items returned (prefix might be empty)
+            setPageImageOverrides({});
+            setPageBackgroundHistory({});
           }
         }
+      } else if (id === selectedNovelId) {
+        // Fetch failed, but we should still clear if we were expecting a refresh
+        setPageImageOverrides({});
+        setPageBackgroundHistory({});
       }
     } catch (e) {
       console.error("Error loading S3 backgrounds:", e);
@@ -778,7 +844,7 @@ export default function App() {
     try {
       console.log(`Syncing character sprites from S3 for ${id}...`);
       const prefix = `novels/${id}/sprites/`;
-      const spriteResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(prefix)}`);
+      const spriteResponse = await fetch(`/api/s3/list?prefix=${encodeURIComponent(prefix)}&t=${assetVersion || Date.now()}`);
       if (spriteResponse.ok) {
         const contentType = spriteResponse.headers.get("content-type");
         if (!contentType || !contentType.includes("application/json")) {
@@ -821,17 +887,17 @@ export default function App() {
             }
           }
           
-          if (Object.keys(s3Sprites).length > 0) {
-            if (id === selectedNovelId) {
-              setGeneratedSprites(prev => ({ ...prev, ...s3Sprites }));
-            }
+          if (id === selectedNovelId) {
+            setGeneratedSprites(s3Sprites);
+            setSpriteHistory(s3Histories);
           }
-          if (Object.keys(s3Histories).length > 0) {
-            if (id === selectedNovelId) {
-              setSpriteHistory(prev => ({ ...prev, ...s3Histories }));
-            }
-          }
+        } else if (id === selectedNovelId) {
+          setGeneratedSprites({});
+          setSpriteHistory({});
         }
+      } else if (id === selectedNovelId) {
+        setGeneratedSprites({});
+        setSpriteHistory({});
       }
     } catch (e) {
       console.error("Error loading S3 sprites:", e);
@@ -977,18 +1043,7 @@ export default function App() {
       loadS3Backgrounds(selectedNovelId);
       loadS3Sprites(selectedNovelId);
     }
-  }, [selectedNovelId]);
-
-  // Initial load from S3 for backgrounds
-  useEffect(() => {
-    const checkS3OnMount = async () => {
-      if (selectedNovelId) {
-        await loadS3Backgrounds(selectedNovelId);
-        await loadS3Sprites(selectedNovelId);
-      }
-    };
-    checkS3OnMount();
-  }, []);
+  }, [selectedNovelId, assetVersion]);
 
   const dialogueTextRef = useRef<HTMLParagraphElement>(null);
   const currentDialogueRef = useRef({ chapter: 0, scene: 0, dialogue: 0 });
@@ -1039,26 +1094,32 @@ export default function App() {
     const scene = chapter.scenes[sceneIdx];
     if (!scene) return '';
 
+    const addVersion = (url: string) => {
+      if (!url) return url;
+      const separator = url.includes('?') ? '&' : '?';
+      return `${url}${separator}v=${assetVersion}`;
+    };
+
     // 0. Check for page-specific background (highest precedence)
     const pageKey = `${scene.id}_${dialogueIdx}`;
     if (pageImageOverrides[pageKey]) {
-      return sanitizeS3Url(pageImageOverrides[pageKey]);
+      return addVersion(sanitizeS3Url(pageImageOverrides[pageKey]));
     }
 
     // 1. Check for scene-specific generated image (local/user override)
     if (sceneImageOverrides[scene.id]) {
-      return sanitizeS3Url(sceneImageOverrides[scene.id]);
+      return addVersion(sanitizeS3Url(sceneImageOverrides[scene.id]));
     }
 
     // 2. Check for global scene background (from S3 shared space)
     if (globalSceneBackgrounds[scene.id]) {
-      return sanitizeS3Url(globalSceneBackgrounds[scene.id]);
+      return addVersion(sanitizeS3Url(globalSceneBackgrounds[scene.id]));
     }
 
     // 3. Check for scene-specific category override
     const sceneOverride = sceneBackgroundOverrides[scene.id];
     if (sceneOverride) {
-      if (backgroundOverrides[sceneOverride]) return sanitizeS3Url(backgroundOverrides[sceneOverride]);
+      if (backgroundOverrides[sceneOverride]) return addVersion(sanitizeS3Url(backgroundOverrides[sceneOverride]));
       // Use thematic mapping if exists
       const themedUrl = NOVEL_THEMES[selectedNovelId]?.[sceneOverride];
       if (themedUrl) return themedUrl;
@@ -1067,7 +1128,7 @@ export default function App() {
 
     // 4. Fallback to default category
     const category = scene.background.split('/').pop()?.replace('.png', '') || '';
-    if (backgroundOverrides[category]) return sanitizeS3Url(backgroundOverrides[category]);
+    if (backgroundOverrides[category]) return addVersion(sanitizeS3Url(backgroundOverrides[category]));
     
     // Check if the original background is a thematic category or picsum
     // But skip if it's already a full S3 fetch URL
@@ -1076,15 +1137,19 @@ export default function App() {
       if (themedUrl) return themedUrl;
     }
 
-    return sanitizeS3Url(scene.background);
-  }, [novel, selectedNovelId, pageImageOverrides, sceneImageOverrides, globalSceneBackgrounds, sceneBackgroundOverrides, backgroundOverrides]);
+    return addVersion(sanitizeS3Url(scene.background));
+  }, [novel, selectedNovelId, pageImageOverrides, sceneImageOverrides, globalSceneBackgrounds, sceneBackgroundOverrides, backgroundOverrides, assetVersion]);
 
   const resolveCharacterSprite = useCallback((charId: string) => {
     if (!charId || charId === 'narrator') return '';
     const char = (characters as any)[charId];
     if (!char) return '';
-    return spriteOverrides[charId] || generatedSprites[charId] || char.image || '';
-  }, [characters, spriteOverrides, generatedSprites]);
+    const rawUrl = spriteOverrides[charId] || generatedSprites[charId] || char.image || '';
+    if (!rawUrl) return '';
+    const sanitized = sanitizeS3Url(rawUrl);
+    const separator = sanitized.includes('?') ? '&' : '?';
+    return `${sanitized}${separator}v=${assetVersion}`;
+  }, [characters, spriteOverrides, generatedSprites, assetVersion]);
 
   const getSceneBackground = () => {
     return resolveBackground(currentChapterIndex, currentSceneIndex, currentDialogueIndex);
@@ -1806,6 +1871,7 @@ export default function App() {
           onLogin={handleLogin} 
           onLogout={handleLogout} 
           onOpenAdmin={() => setIsAdminOpen(true)}
+          onRefresh={handleRefreshLibrary}
         />
         {renderModals()}
       </>
@@ -1948,19 +2014,16 @@ export default function App() {
       onTouchEnd={handlePointerUp}
     >
       {/* Background Layer */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={getSceneBackground()}
-          initial={{ opacity: 0, scale: 1.1 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 1.5 }}
-          className="absolute inset-0"
+        <div
+          className={cn(
+            "absolute inset-x-0 top-0 overflow-hidden",
+            isScenePaused ? "hidden" : (isDialogueHidden ? "bottom-0" : "bottom-[280px] md:bottom-[320px]")
+          )}
         >
           <img 
             src={getSceneBackground() || undefined} 
             alt="Background" 
-            className="w-full h-full object-cover opacity-60 grayscale-[0.2]"
+            className="w-full h-full object-contain opacity-60 grayscale-[0.2]"
             referrerPolicy="no-referrer"
             onError={(e) => {
               const defaultThemedUrl = selectedNovelId ? NOVEL_THEMES[selectedNovelId]?.['default'] : null;
@@ -1971,9 +2034,8 @@ export default function App() {
               (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${currentScene?.id || 'default'}/1920/1080?blur=10`;
             }}
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/30" />
-        </motion.div>
-      </AnimatePresence>
+          <div className="absolute inset-0 bg-gradient-to-t from-black from-0% via-transparent via-25% to-black/30" />
+        </div>
 
       <AnimatePresence>
         {isDialogueHidden && (
@@ -1994,53 +2056,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Character Sprites */}
-      <div className="absolute top-0 left-0 right-0 h-[60vh] flex items-center justify-center pointer-events-none overflow-hidden">
-        <AnimatePresence mode="wait">
-          {currentCharacter && !isDialogueHidden && currentCharacter.id !== 'narrator' && (
-            <motion.div
-              key={currentCharacter.id}
-              initial={{ opacity: 0, x: 50, scale: 0.95 }}
-              animate={{ opacity: 1, x: 0, scale: 1 }}
-              exit={{ opacity: 0, x: -50, scale: 0.95 }}
-              transition={{ 
-                type: "spring",
-                stiffness: 100,
-                damping: 20,
-                opacity: { duration: 0.4 }
-              }}
-              className="relative w-[300px] h-[400px] flex items-center justify-center pointer-events-auto cursor-pointer"
-            >
-              <div className="relative w-[240px] h-[320px] bg-white p-3 shadow-2xl border-8 border-[#d4c5b0] rotate-2 flex items-center justify-center overflow-hidden">
-                {isGenerating[currentCharacter.id] || (!spriteOverrides[currentCharacter.id] && !generatedSprites[currentCharacter.id] && !currentCharacter.image) ? (
-                  <div className="flex flex-col items-center justify-center space-y-4 text-[#2c241a]">
-                    <Loader2 className="w-12 h-12 animate-spin opacity-40" />
-                    <p className="text-xs uppercase tracking-widest opacity-60">Sketching Portrait...</p>
-                  </div>
-                ) : (
-                  <>
-                    <img 
-                      src={spriteOverrides[currentCharacter.id] || generatedSprites[currentCharacter.id] || currentCharacter.image || undefined} 
-                      alt={currentCharacter.name}
-                      className="w-full h-full object-cover grayscale-[0.1] sepia-[0.2]"
-                      referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${currentCharacter.id}/600/800?grayscale`;
-                      }}
-                    />
-                    {generatedSprites[currentCharacter.id] && (
-                      <div className="absolute top-2 right-2 bg-white/80 backdrop-blur-sm p-1 rounded-full shadow-sm">
-                        <Sparkles className="w-3 h-3 text-[#d4c5b0]" />
-                      </div>
-                    )}
-                  </>
-                )}
-                <div className="absolute inset-0 border border-black/10 pointer-events-none" />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+
 
       <AnimatePresence>
         {isScenePaused && (
@@ -2372,14 +2388,57 @@ export default function App() {
               !currentCharacter && "bg-black/5"
             )}
           >
-        <div className="max-w-4xl mx-auto w-full relative">
+        <div className="max-w-6xl mx-auto w-full relative flex flex-col md:flex-row items-center md:items-end gap-6 md:gap-8">
+          
+          {/* Character Portrait */}
           <AnimatePresence mode="wait">
-            <motion.div
+            {currentCharacter && currentCharacter.id !== 'narrator' && (
+              <motion.div
+                key={currentCharacter.id}
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ 
+                  type: "spring",
+                  stiffness: 100,
+                  damping: 20,
+                  opacity: { duration: 0.4 }
+                }}
+                className="relative w-[140px] md:w-[240px] shrink-0 pointer-events-auto cursor-pointer flex justify-center z-10 md:mb-4"
+              >
+                <div className="relative w-full aspect-[3/4] bg-white p-2 md:p-3 shadow-2xl border-4 md:border-8 border-[#d4c5b0] md:-rotate-2 rotate-0 flex items-center justify-center overflow-hidden">
+                  {isGenerating[currentCharacter.id] || (!spriteOverrides[currentCharacter.id] && !generatedSprites[currentCharacter.id] && !currentCharacter.image) ? (
+                    <div className="flex flex-col items-center justify-center space-y-2 md:space-y-4 text-[#2c241a]">
+                      <Loader2 className="w-8 h-8 md:w-12 md:h-12 animate-spin opacity-40" />
+                      <p className="text-[10px] md:text-xs uppercase tracking-widest opacity-60 text-center">Sketching...</p>
+                    </div>
+                  ) : (
+                    <>
+                      <img 
+                        src={spriteOverrides[currentCharacter.id] || generatedSprites[currentCharacter.id] || currentCharacter.image || undefined} 
+                        alt={currentCharacter.name}
+                        className="w-full h-full object-cover grayscale-[0.1] sepia-[0.2]"
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${currentCharacter.id}/600/800?grayscale`;
+                        }}
+                      />
+                      {generatedSprites[currentCharacter.id] && (
+                        <div className="absolute top-2 right-2 bg-white/80 backdrop-blur-sm p-1 rounded-full shadow-sm">
+                          <Sparkles className="w-3 h-3 text-[#d4c5b0]" />
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <div className="absolute inset-0 border border-black/10 pointer-events-none" />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div className="flex-1 w-full min-w-0">
+            <div
               key={`${currentChapterIndex}-${currentSceneIndex}-${currentDialogueIndex}`}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.3 }}
               className="relative"
             >
               <div className="absolute -top-10 left-0 flex items-center gap-2">
@@ -2556,8 +2615,8 @@ export default function App() {
                   </p>
                 </div>
               </Card>
-            </motion.div>
-          </AnimatePresence>
+            </div>
+          </div>
         </div>
       </motion.div>
     )}
@@ -2760,6 +2819,7 @@ export default function App() {
                 setCurrentDialogueIndex(0);
                 setHistory([]);
               }}
+              onRefresh={handleRefreshProgress}
             />
           )}
         </AnimatePresence>
@@ -2778,9 +2838,20 @@ export default function App() {
               <Card className="max-w-2xl w-full p-8 bg-white rounded-none shadow-2xl">
                 <div className="flex justify-between items-center mb-6">
                   <h2 className="text-2xl font-bold">Bookmarks</h2>
-                  <Button variant="ghost" size="icon" onClick={() => setIsBookmarksOpen(false)}>
-                    <ChevronLeft className="w-6 h-6" />
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="text-gray-400 hover:text-[#1a1a1a]"
+                      onClick={handleRefreshProgress}
+                      title="Sync from cloud"
+                    >
+                      <RefreshCw className="w-5 h-5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => setIsBookmarksOpen(false)}>
+                      <ChevronLeft className="w-6 h-6" />
+                    </Button>
+                  </div>
                 </div>
                 
                 <div className="max-h-[60vh] pr-4 overflow-y-auto custom-scrollbar">
@@ -3636,15 +3707,22 @@ export default function App() {
               onClick={() => setIsAdminOpen(false)}
             >
               <div className="max-w-4xl mx-auto relative" onClick={(e) => e.stopPropagation()}>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="absolute top-0 right-10 text-white hover:bg-white/20"
-                  onClick={() => setIsAdminOpen(false)}
-                >
-                  <X className="w-6 h-6" />
-                </Button>
-                <AdminPanel novels={allMetadata} user={user} />
+                <div className="flex items-center gap-3">
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    className="text-white hover:bg-white/20 rounded-full"
+                    onClick={() => setIsAdminOpen(false)}
+                  >
+                    <X className="w-6 h-6" />
+                  </Button>
+                </div>
+                <AdminPanel 
+                  novels={allMetadata} 
+                  user={user} 
+                  assetVersion={assetVersion}
+                  onUpdateAssetVersion={setAssetVersion}
+                />
               </div>
             </motion.div>
           )}
@@ -3706,6 +3784,7 @@ export default function App() {
             });
           }}
           onDelete={handleDeleteBackground}
+          onRefresh={handleRefreshAssets}
           novelId={selectedNovelId || 'great-gatsby'}
         />
       </>

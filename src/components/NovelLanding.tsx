@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { LogIn, LogOut, ChevronRight, Pin, Clock, Search as SearchIcon, Sparkles } from 'lucide-react';
+import { LogIn, LogOut, ChevronRight, Pin, Clock, Search as SearchIcon, Sparkles, RefreshCw, Loader2 } from 'lucide-react';
 import { NovelMetadata, BookVersion } from '../types';
 import { User } from '../firebase';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,7 @@ interface NovelLandingProps {
   onLogin: () => void;
   onLogout: () => void;
   onOpenAdmin: () => void;
+  onRefresh?: () => Promise<void>;
 }
 
 export function NovelLanding({ 
@@ -40,15 +41,36 @@ export function NovelLanding({
   user, 
   onLogin, 
   onLogout,
-  onOpenAdmin
+  onOpenAdmin,
+  onRefresh
 }: NovelLandingProps) {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [selectedGenre, setSelectedGenre] = React.useState<string | null>(null);
   const [totalPagesRead, setTotalPagesRead] = React.useState(0);
   const [isSummaryOpen, setIsSummaryOpen] = React.useState(false);
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
+
+  const handleRefresh = async () => {
+    if (!onRefresh) return;
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+      // Recalculate total pages read from local storage after syncing with cloud
+      const total = await getTotalPagesRead();
+      setTotalPagesRead(total);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   React.useEffect(() => {
-    setTotalPagesRead(getTotalPagesRead());
+    const fetchProgress = async () => {
+      const total = await getTotalPagesRead();
+      setTotalPagesRead(total);
+    };
+    fetchProgress();
   }, []);
 
   const genres = React.useMemo(() => {
@@ -118,6 +140,17 @@ export function NovelLanding({
 
           {/* Login/User Info */}
           <div className="flex items-center gap-3">
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="bg-white/10 text-white border-white/20 backdrop-blur-md hover:bg-white/20 rounded-full w-8 h-8 md:w-10 md:h-10 flex items-center justify-center transition-all hover:scale-110 shrink-0" 
+              onClick={handleRefresh} 
+              disabled={isRefreshing || !onRefresh}
+              title="Refresh Library"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5 md:w-4 md:h-4", isRefreshing && "animate-spin")} />
+            </Button>
+
             {user?.email === 'jwalter1@gmail.com' && (
               <Button 
                 variant="ghost" 
@@ -381,16 +414,19 @@ export function NovelLanding({
 
       <ReadSummaryModal 
         isOpen={isSummaryOpen} 
-        onClose={() => {
+        onClose={async () => {
           setIsSummaryOpen(false);
-          setTotalPagesRead(getTotalPagesRead());
+          const total = await getTotalPagesRead();
+          setTotalPagesRead(total);
         }} 
-        onJumpTo={(id, version, chIdx, scIdx) => {
+        onJumpTo={async (id, version, chIdx, scIdx) => {
           onJumpTo?.(id, version, chIdx, scIdx);
           setIsSummaryOpen(false);
-          setTotalPagesRead(getTotalPagesRead());
+          const total = await getTotalPagesRead();
+          setTotalPagesRead(total);
         }}
         user={user}
+        onRefresh={onRefresh}
       />
     </div>
   );

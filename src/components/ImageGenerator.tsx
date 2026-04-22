@@ -8,18 +8,18 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 export const BACKGROUND_CATEGORIES: Record<string, Record<string, string>> = {
   'great-gatsby': {
-    gatsby_mansion: "A cinematic empty background scene (no characters) from The Great Gatsby, showing the grand exterior of Gatsby's mansion at night with glowing windows and a sense of mystery, 1920s style.",
-    buchanan_estate: "A cinematic empty background scene (no characters) from The Great Gatsby, showing the elegant East Egg estate of the Buchanans, white curtains fluttering in the breeze, 1920s style.",
-    valley_of_ashes_scene: "A cinematic empty background scene (no characters) from The Great Gatsby, showing the desolate valley of ashes with the fading billboard of Doctor T.J. Eckleburg, 1920s style.",
-    new_york_city_1920s: "A cinematic empty background scene (no characters) from The Great Gatsby, showing a bustling New York City street in the 1920s, vintage cars, and vibrant energy.",
-    long_island_dock: "A cinematic empty background scene (no characters) from The Great Gatsby, showing a lonely dock at night with a single green light shining in the distance across the water."
+    gatsby_mansion: "From The Great Gatsby, showing the grand exterior of Gatsby's mansion at night with glowing windows and a sense of mystery, 1920s style.",
+    buchanan_estate: "From The Great Gatsby, showing the elegant East Egg estate of the Buchanans, white curtains fluttering in the breeze, 1920s style.",
+    valley_of_ashes_scene: "From The Great Gatsby, showing the desolate valley of ashes with the fading billboard of Doctor T.J. Eckleburg, 1920s style.",
+    new_york_city_1920s: "From The Great Gatsby, showing a bustling New York City street in the 1920s, vintage cars, and vibrant energy.",
+    long_island_dock: "From The Great Gatsby, showing a lonely dock at night with a single green light shining in the distance across the water."
   },
   'pride-prejudice': {
-    longbourn_estate: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the charming Longbourn estate in the English countryside, rolling green hills, early 19th century style.",
-    netherfield_park: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the grand Netherfield Park mansion, elegant architecture, horse-drawn carriages, Regency era.",
-    meryton_village: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the bustling village of Meryton with townspeople in the distance, 19th century England.",
-    pemberley_exterior: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing the magnificent Pemberley estate, a large stone building with a beautiful lake in front, Regency style.",
-    ballroom_scene: "A cinematic empty background scene (no characters) from Pride and Prejudice, showing a grand empty ballroom with Regency decor, chandeliers, elegant atmosphere."
+    longbourn_estate: "From Pride and Prejudice, showing the charming Longbourn estate in the English countryside, rolling green hills, early 19th century style.",
+    netherfield_park: "From Pride and Prejudice, showing the grand Netherfield Park mansion, elegant architecture, horse-drawn carriages, Regency era.",
+    meryton_village: "From Pride and Prejudice, showing the bustling village of Meryton with townspeople in the distance, 19th century England.",
+    pemberley_exterior: "From Pride and Prejudice, showing the magnificent Pemberley estate, a large stone building with a beautiful lake in front, Regency style.",
+    ballroom_scene: "From Pride and Prejudice, showing a grand empty ballroom with Regency decor, chandeliers, elegant atmosphere."
   },
   'animal-farm': {
     barn: "A large, rustic empty barn interior background at night, straw on the floor, dim lanterns overhead, sense of solemn space.",
