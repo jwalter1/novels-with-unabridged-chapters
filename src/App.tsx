@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
 import { GoogleGenAI } from "@google/genai";
 import { generateSpeech, playAudio, stopAudio, unlockAudio, hashString, pauseAudio, resumeAudio, ELEVENLABS_VOICES } from './services/ttsService';
 import { ImageGenerator, BACKGROUND_CATEGORIES } from './components/ImageGenerator';
-import { getFromCache, saveToCache, getBookmarks, saveBookmark, deleteBookmark, Bookmark, getSpriteHistory, saveSpriteHistory, getAllFromStore, syncBookmarksFromCloud } from './services/cacheService';
+import { getFromCache, saveToCache, deleteFromCache, getBookmarks, saveBookmark, deleteBookmark, Bookmark, getSpriteHistory, saveSpriteHistory, getAllFromStore, syncBookmarksFromCloud } from './services/cacheService';
 import { NovelLanding } from './components/NovelLanding';
 import { ProgressView } from './components/ProgressView';
 import { BackgroundSelector } from './components/BackgroundSelector';
@@ -64,6 +64,7 @@ export default function App() {
   const [selectedNovelId, setSelectedNovelId] = useState<string | null>(null);
   const [assetVersion, setAssetVersion] = useState(Date.now());
   const [mainImageRefreshKey, setMainImageRefreshKey] = useState(Date.now());
+  const [cachedBackgroundUrl, setCachedBackgroundUrl] = useState<string>('');
   const [bookVersions, setBookVersions] = useState<Record<string, BookVersion>>(() => {
     const saved = localStorage.getItem('bookVersions');
     return saved ? JSON.parse(saved) : {};
@@ -745,9 +746,13 @@ export default function App() {
             const data = await bgResponse.json();
             if (data.success) {
               data.items.forEach((item: any) => {
-                const category = item.key.split('/').pop().replace('.png', '');
-                // Overwrite with most recent if duplicates (fallbacks might be older or newer)
-                overrides[category] = item.url;
+                const filename = item.key.split('/').pop() || '';
+                const isImage = /\.(png|jpg|jpeg|webp)$/i.test(filename);
+                if (isImage) {
+                  const category = filename.replace(/\.(png|jpg|jpeg|webp)$/i, '');
+                  // Overwrite with most recent if duplicates (fallbacks might be older or newer)
+                  overrides[category] = item.url;
+                }
               });
             }
           }
@@ -776,8 +781,9 @@ export default function App() {
             if (data.success) {
               const sortedItems = [...data.items].sort((a, b) => a.key.localeCompare(b.key));
               sortedItems.forEach((item: any) => {
-                const filename = item.key.split('/').pop();
-                if (filename && filename.includes('_')) {
+                const filename = item.key.split('/').pop() || '';
+                const isImage = /\.(png|jpg|jpeg|webp)$/i.test(filename);
+                if (isImage && filename.includes('_')) {
                   const sceneId = filename.split('_')[0];
                   sceneOverrides[sceneId] = item.url;
                 }
@@ -803,12 +809,13 @@ export default function App() {
             const historyMap: Record<string, string[]> = {};
             const sortedItems = [...data.items].sort((a, b) => a.key.localeCompare(b.key));
             sortedItems.forEach((item: any) => {
-              const filename = item.key.split('/').pop();
-              if (filename && filename.includes('_')) {
+              const filename = item.key.split('/').pop() || '';
+              const isImage = /\.(png|jpg|jpeg|webp)$/i.test(filename);
+              if (isImage && filename.includes('_')) {
                 const parts = filename.split('_');
                 if (parts.length >= 2) {
                   const sceneId = parts[0];
-                  const pageIndex = parts[1].replace('.png', '');
+                  const pageIndex = parts[1].replace(/\.(png|jpg|jpeg|webp)$/i, '');
                   const key = `${sceneId}_${pageIndex}`;
                   if (!historyMap[sceneId]) historyMap[sceneId] = [];
                   historyMap[sceneId].push(item.url);
@@ -1019,6 +1026,10 @@ export default function App() {
       });
     }
 
+    if (urlToDelete) {
+      await deleteFromCache('backgrounds', urlToDelete);
+    }
+
     if (urlToDelete && urlToDelete.includes('/api/s3/get?key=')) {
       // Correctly extract the key and strip any trailing query parameters like &t=...
       const rawKey = urlToDelete.split('key=')[1];
@@ -1117,6 +1128,57 @@ export default function App() {
     const separator = sanitized.includes('?') ? '&' : '?';
     return `${sanitized}${separator}v=${assetVersion}`;
   }, [characters, spriteOverrides, generatedSprites, assetVersion]);
+
+  const currentRawBackgroundUrl = resolveBackground(currentChapterIndex, currentSceneIndex, currentDialogueIndex);
+  
+  // Background caching effect
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    
+    if (!currentRawBackgroundUrl) {
+      setCachedBackgroundUrl('');
+      return;
+    }
+
+    // Add mainImageRefreshKey to the URL to force re-fetch if requested
+    const freshUrl = `${currentRawBackgroundUrl}${currentRawBackgroundUrl.includes('?') ? '&' : '?'}t=${mainImageRefreshKey}`;
+
+    const loadAndCache = async () => {
+      try {
+        // Try local cache first
+        const cacheKey = currentRawBackgroundUrl; // Use base URL as key to avoid duplicate storage
+                                 
+        const cachedBlob = await getFromCache('backgrounds', cacheKey);
+        if (cachedBlob && active) {
+          objectUrl = URL.createObjectURL(cachedBlob);
+          setCachedBackgroundUrl(objectUrl);
+          return;
+        }
+
+        // Not in cache, fetch it
+        const response = await fetch(freshUrl);
+        if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
+        const blob = await response.blob();
+        
+        if (active) {
+          await saveToCache('backgrounds', cacheKey, blob);
+          objectUrl = URL.createObjectURL(blob);
+          setCachedBackgroundUrl(objectUrl);
+        }
+      } catch (e) {
+        console.error("Background cache error:", e);
+        if (active) setCachedBackgroundUrl(freshUrl); // Fallback to network URL
+      }
+    };
+
+    loadAndCache();
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [currentRawBackgroundUrl, mainImageRefreshKey]);
 
   const getSceneBackground = () => {
     return resolveBackground(currentChapterIndex, currentSceneIndex, currentDialogueIndex);
@@ -1987,26 +2049,41 @@ export default function App() {
             isScenePaused ? "hidden" : (isDialogueHidden ? "bottom-0" : "bottom-[280px] md:bottom-[320px]")
           )}
         >
-          <img 
-            src={`${getSceneBackground() || ''}${getSceneBackground()?.includes('?') ? '&' : '?'}t=${mainImageRefreshKey}`} 
-            alt="Background" 
-            className="w-full h-full object-contain opacity-60 grayscale-[0.2]"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              const target = e.target as HTMLImageElement;
-              const defaultThemedUrl = selectedNovelId ? NOVEL_THEMES[selectedNovelId]?.['default'] : null;
-              
-              if (target.src.includes('picsum.photos')) return;
-              if (defaultThemedUrl && !target.src.includes(defaultThemedUrl)) {
-                target.src = defaultThemedUrl;
-                return;
-              }
-              target.src = `https://picsum.photos/seed/${currentScene?.id || 'default'}/1920/1080?blur=10`;
-            }}
-          />
-          <button
+            <AnimatePresence>
+              {cachedBackgroundUrl && (
+                <motion.img 
+                  key={cachedBackgroundUrl}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 0.6 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.8 }}
+                  src={cachedBackgroundUrl} 
+                  alt="Background" 
+                  className="absolute inset-0 w-full h-full object-contain grayscale-[0.2]"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    const defaultThemedUrl = selectedNovelId ? NOVEL_THEMES[selectedNovelId]?.['default'] : null;
+                    
+                    if (target.src.includes('picsum.photos')) return;
+                    if (defaultThemedUrl && !target.src.includes(defaultThemedUrl)) {
+                      target.src = defaultThemedUrl;
+                      return;
+                    }
+                    target.src = `https://picsum.photos/seed/${currentScene?.id || 'default'}/1920/1080?blur=10`;
+                  }}
+                />
+              )}
+            </AnimatePresence>
+            <button
             className="absolute top-4 right-4 bg-white/10 backdrop-blur-md text-white p-2 rounded-full hover:bg-white/20 transition-all z-50"
-            onClick={() => setMainImageRefreshKey(Date.now())}
+            onClick={async () => {
+              const rawUrl = resolveBackground(currentChapterIndex, currentSceneIndex, currentDialogueIndex);
+              if (rawUrl) {
+                await deleteFromCache('backgrounds', rawUrl);
+              }
+              setMainImageRefreshKey(Date.now());
+            }}
             title="Refresh Background"
           >
             <RefreshCw className="w-5 h-5" />
@@ -2370,7 +2447,7 @@ export default function App() {
           {/* Character Portrait */}
           <div className="w-[140px] md:w-[240px] shrink-0 z-10 md:mb-4 flex justify-center">
             <AnimatePresence mode="wait">
-              {currentCharacter && currentCharacter.id !== 'narrator' && (
+              {currentCharacter && currentCharacter.id !== 'narrator' && (spriteOverrides[currentCharacter.id] || generatedSprites[currentCharacter.id] || currentCharacter.image || isGenerating[currentCharacter.id]) && (
                 <motion.div
                   key={currentCharacter.id}
                   initial={{ opacity: 0, scale: 0.95 }}
@@ -2382,10 +2459,10 @@ export default function App() {
                     damping: 20,
                     opacity: { duration: 0.4 }
                   }}
-                  className="relative pointer-events-auto cursor-pointer flex justify-center"
+                  className="relative pointer-events-auto flex justify-center"
                 >
                   <div className="relative w-full aspect-[3/4] bg-white p-2 md:p-3 shadow-2xl border-4 md:border-8 border-[#d4c5b0] md:-rotate-2 rotate-0 flex items-center justify-center overflow-hidden">
-                    {isGenerating[currentCharacter.id] || (!spriteOverrides[currentCharacter.id] && !generatedSprites[currentCharacter.id] && !currentCharacter.image) ? (
+                    {isGenerating[currentCharacter.id] ? (
                       <div className="flex flex-col items-center justify-center space-y-2 md:space-y-4 text-[#2c241a]">
                         <Loader2 className="w-8 h-8 md:w-12 md:h-12 animate-spin opacity-40" />
                         <p className="text-[10px] md:text-xs uppercase tracking-widest opacity-60 text-center">Sketching...</p>

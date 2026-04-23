@@ -10,8 +10,10 @@ import { saveNovelVoiceConfig, loadNovelVoiceConfig } from '../services/voiceSer
 import { clearVoiceConfigCache, generateSpeech, playAudio, ELEVENLABS_VOICES } from '../services/ttsService';
 import { fetchRawBookText, extractNovelMetadata, extractCharacters, splitIntoChapters, processChapter } from '../services/importService';
 import { saveImportedNovel } from '../services/novelService';
-import { clearStore, clearNovelFromCache } from '../services/cacheService';
+import { clearStore, clearNovelFromCache, deleteFromCache, saveToCache, getFromCache } from '../services/cacheService';
 import { resolveSceneBackground } from '../lib/resolutionUtils';
+import { CachedAsset } from './CachedAsset';
+import { NOVEL_THEMES } from '../data/thematicBackgrounds';
 import { NOVELS_METADATA } from '../data/bookData';
 import { getNovelData } from '../data/bookData';
 import { auth, User } from '../firebase';
@@ -71,6 +73,10 @@ export function AdminPanel({
   const [isGeneratingSprites, setIsGeneratingSprites] = useState(false);
   const [spriteResults, setSpriteResults] = useState<{key: string, status: 'pending' | 'success' | 'error' | 'skipped', message?: string}[]>([]);
 
+  // Pagination for stored assets
+  const [assetsPage, setAssetsPage] = useState(1);
+  const ASSETS_PER_PAGE = 12;
+
   // Prompt Management
   const [promptScope, setPromptScope] = useState<'global' | 'scene'>('global');
   const [selectedSceneId, setSelectedSceneId] = useState("");
@@ -96,6 +102,9 @@ export function AdminPanel({
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
   const [metadataViewKey, setMetadataViewKey] = useState<string | null>(null);
+  const [confirmBatchData, setConfirmBatchData] = useState<{ active: boolean, count: number } | null>(null);
+  const [isCachingFullNovel, setIsCachingFullNovel] = useState(false);
+  const [cacheProgress, setCacheProgress] = useState({ total: 0, current: 0, label: '' });
 
   const [selectedChapterIdx, setSelectedChapterIdx] = useState(0);
   const [selectedSceneIdx, setSelectedSceneIdx] = useState(0);
@@ -216,6 +225,7 @@ export function AdminPanel({
 
   const fetchAssets = useCallback(async () => {
     setIsFetching(true);
+    setAssetsPage(1); // Reset to page 1 on fetch
     try {
       const items = await listS3Objects(`novels/${novelId}/`);
       const fallbackItems = await listS3Objects(`backgrounds/fallbacks/${novelId}/`);
@@ -228,6 +238,9 @@ export function AdminPanel({
         !item.key.includes('/sprites/')
       );
       
+      // Sort to show newest first for easier management (optional but good practice)
+      filteredItems.sort((a, b) => b.key.localeCompare(a.key));
+
       setAssets(filteredItems);
       onUpdateAssetVersion(Date.now());
     } catch (error) {
@@ -455,6 +468,10 @@ export function AdminPanel({
       const base64 = await generateImage(prompt);
       await uploadToS3(assetKey, base64);
       
+      // Clear IndexedDB cache for this asset
+      const assetUrl = `/api/s3/get?key=${encodeURIComponent(assetKey)}`;
+      await deleteFromCache('backgrounds', assetUrl);
+
       // Save prompt metadata
       try {
         const metaKey = assetKey.replace('.png', '.json');
@@ -548,6 +565,188 @@ export function AdminPanel({
     if (activeTab === 'browse') fetchAssets();
   };
 
+  const handleGenerateAllPages = async () => {
+    if (!novelId || !novelData) {
+      alert("Please ensure the novel is loaded first.");
+      return;
+    }
+
+    const metadata = novels.find(n => n.id === novelId);
+    const globalConfig = await loadNovelPromptConfig(novelId);
+    const globalStylePrompt = globalConfig?.stylePrompt || metadata?.stylePrompt || "High quality, detailed, cinematic lighting.";
+    const novelTitle = metadata?.title || "Novel";
+
+    // Flatten pages to check
+    const pagesToGenerate: { scene: Scene, pIdx: number, key: string, label: string }[] = [];
+    
+    novelData.chapters.forEach((chapter, cIdx) => {
+      chapter.scenes.forEach((scene, sIdx) => {
+        scene.dialogue.forEach((dialogue, pIdx) => {
+          const pageKey = `${scene.id}_${pIdx}`;
+          
+          const hasOverride = !!pageImageOverrides[pageKey];
+          const hasS3Asset = assets.some(a => {
+            const parts = a.key.split('/');
+            const filename = parts[parts.length - 1];
+            const nameWithoutExt = filename.split('.')[0];
+            const isImage = /\.(png|jpg|jpeg|webp)$/i.test(filename);
+            return isImage && (nameWithoutExt === pageKey || nameWithoutExt.startsWith(`${pageKey}_`));
+          });
+
+          if (!hasOverride && !hasS3Asset) {
+            pagesToGenerate.push({
+              scene,
+              pIdx,
+              key: pageKey,
+              label: `Ch ${cIdx+1} Sc ${sIdx+1} Pg ${pIdx+1}`
+            });
+          }
+        });
+      });
+    });
+
+    if (pagesToGenerate.length === 0) {
+      setResults([{ key: 'Status', status: 'success', message: 'All pages already have a custom image assigned!' }]);
+      return;
+    }
+
+    if (!confirmBatchData || !confirmBatchData.active || confirmBatchData.count !== pagesToGenerate.length) {
+      setConfirmBatchData({ active: true, count: pagesToGenerate.length });
+      setTimeout(() => setConfirmBatchData(null), 5000);
+      return;
+    }
+
+    setConfirmBatchData(null);
+    setIsGenerating(true);
+    setResults(pagesToGenerate.map(p => ({ key: p.label, status: 'pending' as const })));
+
+    let successCount = 0;
+
+    for (const page of pagesToGenerate) {
+      let retries = 3;
+      let delay = 2000;
+      let success = false;
+
+      const sceneConfig = await loadScenePromptConfig(novelId, page.scene.id);
+      const stylePrompt = sceneConfig?.promptOverride || globalStylePrompt;
+
+      let chapterNum = "Chapter";
+      const chapter = novelData.chapters.find(c => c.scenes.some(s => s.id === page.scene.id));
+      if (chapter) {
+        const chapterMatch = chapter.title.match(/Chapter\s+(\d+)/i);
+        chapterNum = chapterMatch ? `Chapter ${chapterMatch[1]}` : chapter.title;
+      }
+      
+      const contextSnippet = page.scene.dialogue[page.pIdx]?.text?.substring(0, 300) || '';
+      const prompt = `From ${novelTitle}, ${chapterNum}: ${page.scene.title}. ${contextSnippet}... ${stylePrompt}`;
+      
+      const s3Path = `novels/${novelId}/pages/${page.key}_${Date.now()}.png`;
+
+      while (retries > 0 && !success) {
+        try {
+          const base64 = await generateImage(prompt);
+          await uploadToS3(s3Path, base64);
+          
+          try {
+            const metaKey = s3Path.replace('.png', '.json');
+            await uploadMetadata(metaKey, { prompt, generatedAt: new Date().toISOString(), novelId });
+          } catch (e) {
+            console.warn("Failed to save prompt metadata:", e);
+          }
+
+          const assetUrl = `/api/s3/get?key=${encodeURIComponent(s3Path)}`;
+          onSetPageImageOverrides(prev => ({
+            ...prev,
+            [page.key]: assetUrl
+          }));
+
+          setResults(prev => prev.map(r => r.key === page.label ? { ...r, status: 'success' } : r));
+          success = true;
+          successCount++;
+          
+        } catch (error: any) {
+          if (error.status === 429 || error.message?.includes('quota')) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay *= 2;
+            retries--;
+          } else {
+            setResults(prev => prev.map(r => r.key === page.label ? { ...r, status: 'error', message: error.message } : r));
+            break;
+          }
+        }
+      }
+    }
+    
+    setIsGenerating(false);
+    onUpdateAssetVersion(Date.now());
+    await fetchAssets();
+    alert(`Finished generating pages. Successfully generated ${successCount} out of ${pagesToGenerate.length}.`);
+  };
+
+  const handleWarmCache = async () => {
+    if (!novelId) return;
+    setIsCachingFullNovel(true);
+    setCacheProgress({ total: 0, current: 0, label: 'Scanning cloud storage...' });
+    
+    try {
+      // 1. List all objects for this novel
+      const prefix = `novels/${novelId}/`;
+      const allObjects = await listS3Objects(prefix);
+      
+      const imageAssets = allObjects.filter(obj => 
+        obj.key.endsWith('.png') || obj.key.endsWith('.jpg') || obj.key.endsWith('.jpeg')
+      );
+      
+      setCacheProgress({ total: imageAssets.length, current: 0, label: 'Initializing cache warming...' });
+      
+      let count = 0;
+      for (const asset of imageAssets) {
+        if (!asset.url) continue;
+        
+        const isSprite = asset.key.includes('/sprites/');
+        const store = isSprite ? 'sprites' : 'backgrounds' as any;
+        
+        // Normalize cache key (strip cache busters)
+        let cacheKey = asset.url;
+        try {
+          const u = new URL(asset.url, window.location.origin);
+          u.searchParams.delete('t');
+          u.searchParams.delete('assetVersion');
+          cacheKey = u.toString();
+        } catch (e) {
+          cacheKey = asset.url.split('?')[0].split('&')[0];
+        }
+
+        setCacheProgress(prev => ({ ...prev, label: `Caching: ${asset.key.split('/').pop()}` }));
+        
+        // Check if already cached
+        const existing = await getFromCache(store, cacheKey);
+        if (!existing) {
+          try {
+            const res = await fetch(asset.url);
+            if (res.ok) {
+              const blob = await res.blob();
+              await saveToCache(store, cacheKey, blob);
+            }
+          } catch (fetchErr) {
+            console.warn(`Failed to cache ${asset.key}:`, fetchErr);
+          }
+        }
+        
+        count++;
+        setCacheProgress(prev => ({ ...prev, current: count }));
+      }
+      
+      alert(`Cache warming complete! Stored ${count} assets locally.`);
+    } catch (err) {
+      console.error("Cache warming failed:", err);
+      alert("Failed to fully warm cache. Some assets may not be available offline.");
+    } finally {
+      setIsCachingFullNovel(false);
+      setCacheProgress({ total: 0, current: 0, label: '' });
+    }
+  };
+
   const handleClearBackgroundCache = async () => {
     if (!novelId) return;
     setIsClearingCache(true);
@@ -631,6 +830,52 @@ export function AdminPanel({
 
       setAssets(prev => prev.filter(a => a.key !== key));
       setSprites(prev => prev.filter(a => a.key !== key));
+      
+      // Cleanup orphaned assignments/overrides that might point to this deleted asset
+      const assetUrl = `/api/s3/get?key=${encodeURIComponent(key)}`;
+      
+      // Clear IndexedDB cache for this asset
+      await deleteFromCache('backgrounds', assetUrl);
+
+      onSetPageImageOverrides(prev => {
+        const next = { ...prev };
+        let changed = false;
+        Object.keys(next).forEach(k => {
+          if (next[k] === assetUrl) {
+            delete next[k];
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+
+      onSetSceneImageOverrides(prev => {
+        const next = { ...prev };
+        let changed = false;
+        Object.keys(next).forEach(k => {
+          if (next[k] === assetUrl) {
+            delete next[k];
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+
+      onSetBackgroundOverrides(prev => {
+        const next = { ...prev };
+        let changed = false;
+        Object.keys(next).forEach(k => {
+          if (next[k] === assetUrl) {
+            delete next[k];
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+
+      // Also clean up sceneBackgroundOverrides if they point to a deleted category
+      // (This is trickier as it maps sceneId -> category, and backgroundOverrides maps category -> url)
+      // But we just deleted an asset by key, which might have been a category background or a scene background.
       
       // Refresh version to clear caches
       onUpdateAssetVersion(Date.now());
@@ -1013,12 +1258,37 @@ export function AdminPanel({
             <div className="flex flex-col">
               <span className="text-xs font-bold uppercase tracking-widest text-[#8b7355]">Background Cache Management</span>
               <span className="text-[10px] text-gray-500 italic">Force fresh background retrieval for <strong>{novelId}</strong> (Preserves sprites & audio)</span>
+              {isCachingFullNovel && (
+                <div className="mt-2 w-full max-w-xs">
+                  <div className="flex justify-between text-[8px] uppercase font-bold text-[#8b7355] mb-1">
+                    <span>{cacheProgress.label}</span>
+                    <span>{Math.round((cacheProgress.current / (cacheProgress.total || 1)) * 100)}%</span>
+                  </div>
+                  <div className="h-1 w-full bg-gray-100 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${(cacheProgress.current / (cacheProgress.total || 1)) * 100}%` }}
+                      className="h-full bg-[#8b7355]"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[10px] font-mono opacity-40 uppercase">v{assetVersion}</span>
               <Button 
+                onClick={handleWarmCache}
+                disabled={isCachingFullNovel || isClearingCache}
+                variant="outline"
+                size="sm"
+                className="border-blue-200 text-blue-600 hover:bg-blue-50 rounded-none h-8 px-4 text-[10px] uppercase tracking-widest font-bold"
+              >
+                {isCachingFullNovel ? <Loader2 className="w-3 h-3 animate-spin mr-2" /> : <Download className="w-3 h-3 mr-2" />}
+                Load Full Cache
+              </Button>
+              <Button 
                 onClick={handleClearBackgroundCache}
-                disabled={isClearingCache}
+                disabled={isClearingCache || isCachingFullNovel}
                 variant="outline"
                 size="sm"
                 className="border-[#d4c5b0] text-[#8b7355] hover:bg-[#fdfbf7] rounded-none h-8 px-4 text-[10px] uppercase tracking-widest font-bold"
@@ -1073,10 +1343,22 @@ export function AdminPanel({
           <div className="flex-1 flex flex-col space-y-6 overflow-hidden">
             <div className="flex items-center justify-between bg-white border border-[#d4c5b0] p-4">
               <div className="flex flex-col">
-                <span className="text-xs font-bold uppercase tracking-widest text-[#8b7355]">Upload Asset</span>
-                <span className="text-sm text-gray-500 italic">Manually add specific backgrounds</span>
+                <span className="text-xs font-bold uppercase tracking-widest text-[#8b7355]">Manage Assets</span>
+                <span className="text-sm text-gray-500 italic">Generate or manually add backgrounds</span>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  onClick={handleGenerateAllPages}
+                  disabled={isGenerating || !novelData}
+                  variant={confirmBatchData?.active ? "destructive" : "outline"}
+                  className={cn(
+                    "rounded-none cursor-pointer h-10 px-6 transition-colors",
+                    confirmBatchData?.active ? "bg-red-600 text-white hover:bg-red-700 border-red-600" : "border-[#8b7355] text-[#8b7355] hover:bg-[#8b7355] hover:text-white"
+                  )}
+                >
+                  {isGenerating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                  {confirmBatchData?.active ? `Confirm Batch (${confirmBatchData.count} pages)` : "Generate All Pages"}
+                </Button>
                 <input 
                   type="file" 
                   id="asset-upload" 
@@ -1098,6 +1380,26 @@ export function AdminPanel({
               </div>
             </div>
 
+            {results.length > 0 && (
+              <div className="flex-1 overflow-hidden flex flex-col bg-white border border-[#d4c5b0] rounded-none max-h-[300px]">
+                <div className="px-4 py-2 bg-[#f5f0e5] border-b border-[#d4c5b0] text-[10px] font-bold uppercase tracking-widest text-[#8b7355]">
+                  Generation Status Log
+                </div>
+                <div className="p-4 space-y-2 max-h-[300px] overflow-y-auto custom-scrollbar font-mono text-[11px]">
+                  {results.map((res) => (
+                    <div key={res.key} className="flex items-center justify-between py-1 border-b border-gray-50 last:border-0">
+                      <span className="text-gray-600 truncate mr-4">{res.key}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {res.status === 'pending' && <span className="text-blue-500 animate-pulse">GENERATING...</span>}
+                        {res.status === 'success' && <span className="text-green-600 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> UPLOADED</span>}
+                        {res.status === 'error' && <span className="text-red-500" title={res.message}>ERROR: {res.message?.substring(0, 20)}...</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="flex-1 bg-[#fdfbf7] border border-[#d4c5b0] overflow-hidden flex flex-col min-h-0">
               <div className="px-4 py-3 bg-[#f5f0e5] border-b border-[#d4c5b0] flex justify-between items-center">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-[#8b7355]">
@@ -1117,59 +1419,87 @@ export function AdminPanel({
                     <p className="text-sm italic">No custom assets found for this novel.</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                    {assets.map((asset) => (
-                      <div key={asset.key} className="group relative aspect-video bg-gray-100 border border-[#d4c5b0] overflow-hidden cursor-pointer" onClick={() => setLightboxImage(`${asset.url}&t=${assetVersion}`)}>
-                        <img 
-                          src={`${asset.url}&t=${assetVersion}`} 
-                          alt={asset.key} 
-                          className="w-full h-full object-cover"
-                          referrerPolicy="no-referrer"
-                        />
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-2 text-center pointer-events-none">
-                          <p className="text-[10px] text-white font-mono break-all mb-2">{asset.key.split('/').pop()}</p>
-                        </div>
-                        <div className="absolute top-2 left-2 flex flex-col gap-1 items-start">
-                          {asset.key.includes('fallbacks') && (
-                            <div className="px-1.5 py-0.5 bg-[#8b7355] text-white text-[8px] font-bold uppercase tracking-tighter">
-                              Fallback
+                  <>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+                      {assets.slice((assetsPage - 1) * ASSETS_PER_PAGE, assetsPage * ASSETS_PER_PAGE).map((asset) => (
+                        <div key={asset.key} className="group relative aspect-video bg-gray-100 border border-[#d4c5b0] overflow-hidden cursor-pointer" onClick={() => setLightboxImage(`${asset.url}&t=${assetVersion}`)}>
+                          <CachedAsset 
+                            src={`${asset.url}&t=${assetVersion}`} 
+                            alt={asset.key} 
+                            className="w-full h-full object-cover"
+                            refreshKey={assetVersion}
+                            store="backgrounds"
+                          />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-2 text-center pointer-events-none">
+                            <p className="text-[10px] text-white font-mono break-all mb-2">{asset.key.split('/').pop()}</p>
+                          </div>
+                          <div className="absolute top-2 left-2 flex flex-col gap-1 items-start">
+                            {asset.key.includes('fallbacks') && (
+                              <div className="px-1.5 py-0.5 bg-[#8b7355] text-white text-[8px] font-bold uppercase tracking-tighter">
+                                Fallback
+                              </div>
+                            ) || (
+                              <div className="px-1.5 py-0.5 bg-blue-600 text-white text-[8px] font-bold uppercase tracking-tighter">
+                                Custom
+                              </div>
+                            )}
+                            <div className="px-1.5 py-0.5 bg-black/60 text-white text-[8px] font-bold uppercase tracking-widest max-w-[120px] truncate">
+                              {getAssetLabel(asset.key)}
                             </div>
-                          ) || (
-                            <div className="px-1.5 py-0.5 bg-blue-600 text-white text-[8px] font-bold uppercase tracking-tighter">
-                              Custom
-                            </div>
-                          )}
-                          <div className="px-1.5 py-0.5 bg-black/60 text-white text-[8px] font-bold uppercase tracking-widest max-w-[120px] truncate">
-                            {getAssetLabel(asset.key)}
+                          </div>
+                          <div className="absolute bottom-2 right-2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handleViewMetadata(asset.key); }}
+                              className="bg-blue-500 text-white p-1.5 hover:bg-blue-600 shadow-lg"
+                              title="View AI Prompt"
+                            >
+                              <Terminal className="w-3.5 h-3.5" />
+                            </button>
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handleRegenerateAsset(asset.key); }}
+                              disabled={regeneratingKeys[asset.key]}
+                              className="bg-[#8b7355] text-white p-1.5 hover:bg-[#7a654a] shadow-lg disabled:opacity-50"
+                              title="Regenerate"
+                            >
+                              <RefreshCw className={cn("w-3.5 h-3.5", regeneratingKeys[asset.key] && "animate-spin")} />
+                            </button>
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handleDeleteAsset(asset.key); }}
+                              className="bg-red-600 text-white p-1.5 hover:bg-red-700 shadow-lg"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
-                        <div className="absolute bottom-2 right-2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); handleViewMetadata(asset.key); }}
-                            className="bg-blue-500 text-white p-1.5 hover:bg-blue-600 shadow-lg"
-                            title="View AI Prompt"
-                          >
-                            <Terminal className="w-3.5 h-3.5" />
-                          </button>
-                          <button 
-                            onClick={() => handleRegenerateAsset(asset.key)}
-                            disabled={regeneratingKeys[asset.key]}
-                            className="bg-[#8b7355] text-white p-1.5 hover:bg-[#7a654a] shadow-lg disabled:opacity-50"
-                            title="Regenerate"
-                          >
-                            <RefreshCw className={cn("w-3.5 h-3.5", regeneratingKeys[asset.key] && "animate-spin")} />
-                          </button>
-                          <button 
-                            onClick={() => handleDeleteAsset(asset.key)}
-                            className="bg-red-600 text-white p-1.5 hover:bg-red-700 shadow-lg"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                      ))}
+                    </div>
+                    {assets.length > ASSETS_PER_PAGE && (
+                      <div className="flex items-center justify-between mt-4 py-2 border-t border-[#d4c5b0]">
+                        <Button 
+                          onClick={() => setAssetsPage(p => Math.max(1, p - 1))}
+                          disabled={assetsPage === 1}
+                          variant="outline"
+                          size="sm"
+                          className="border-[#8b7355] text-[#8b7355] rounded-none disabled:opacity-50"
+                        >
+                          Previous
+                        </Button>
+                        <span className="text-xs text-[#8b7355] font-bold">
+                          Page {assetsPage} of {Math.ceil(assets.length / ASSETS_PER_PAGE)}
+                        </span>
+                        <Button 
+                          onClick={() => setAssetsPage(p => Math.min(Math.ceil(assets.length / ASSETS_PER_PAGE), p + 1))}
+                          disabled={assetsPage === Math.ceil(assets.length / ASSETS_PER_PAGE)}
+                          variant="outline"
+                          size="sm"
+                          className="border-[#8b7355] text-[#8b7355] rounded-none disabled:opacity-50"
+                        >
+                          Next
+                        </Button>
                       </div>
-                    ))}
-                  </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -1268,19 +1598,19 @@ export function AdminPanel({
                                   onClick={() => pageBgResult.url && setLightboxImage(pageBgResult.url)}
                                 >
                                   {pageBgResult.url ? (
-                                    <img 
-                                      src={pageBgResult.url} 
-                                      alt="Background" 
-                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                                      referrerPolicy="no-referrer"
-                                      onError={(e) => {
-                                        console.warn("Preview image failed to load:", pageBgResult.url);
-                                        const target = e.target as HTMLImageElement;
-                                        // Avoid infinite loops
-                                        if (target.src.includes('picsum.photos')) return;
-                                        target.src = `https://picsum.photos/seed/${scene.id}_${pIdx}/1920/1080?blur=5`;
-                                      }}
-                                    />
+                                      <CachedAsset 
+                                        src={`${pageBgResult.url}&t=${assetVersion}`} 
+                                        alt="Background" 
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                        refreshKey={assetVersion}
+                                        store="backgrounds"
+                                        onError={(e) => {
+                                          console.warn("Preview image failed to load:", pageBgResult.url);
+                                          const target = e.target as HTMLImageElement;
+                                          if (target.src.includes('picsum.photos')) return;
+                                          target.src = `https://picsum.photos/seed/${scene.id}_${pIdx}/1920/1080?blur=5`;
+                                        }}
+                                      />
                                   ) : (
                                     <div className="w-full h-full flex items-center justify-center text-gray-300">
                                       <ImageIcon className="w-4 h-4" />
@@ -1372,22 +1702,17 @@ export function AdminPanel({
                       )}
                     </div>
                   </div>
-                  <div 
+                   <div 
                     className="aspect-video bg-gray-100 border border-dashed border-[#d4c5b0] flex items-center justify-center overflow-hidden relative cursor-pointer group"
-                    onClick={() => activeBackgroundUrl && setLightboxImage(activeBackgroundUrl)}
+                    onClick={() => activeBackgroundUrl && setLightboxImage(`${activeBackgroundUrl}&t=${assetVersion}`)}
                   >
                     {activeBackgroundUrl ? (
-                      <img 
-                        src={activeBackgroundUrl} 
+                      <CachedAsset 
+                        src={`${activeBackgroundUrl}&t=${assetVersion}`} 
                         alt="Preview" 
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                        referrerPolicy="no-referrer"
-                        onError={(e) => {
-                          console.warn("Active preview image failed to load:", activeBackgroundUrl);
-                          const target = e.target as HTMLImageElement;
-                          if (target.src.includes('picsum.photos')) return;
-                          target.src = `https://picsum.photos/seed/active_${novelData?.chapters?.[selectedChapterIdx]?.scenes?.[selectedSceneIdx]?.id}_${selectedPageIdx}/1920/1080?blur=5`;
-                        }}
+                        refreshKey={assetVersion}
+                        store="backgrounds"
                       />
                     ) : (
                       <div className="flex flex-col items-center gap-2 text-gray-400">
@@ -1621,11 +1946,12 @@ export function AdminPanel({
                       
                       return (
                         <div key={sprite.key} className="group relative aspect-[3/4] bg-gray-100 border border-[#d4c5b0] overflow-hidden cursor-pointer" onClick={() => setLightboxImage(`${sprite.url}&t=${assetVersion}`)}>
-                          <img 
+                          <CachedAsset 
                             src={`${sprite.url}&t=${assetVersion}`} 
                             alt={charName} 
                             className="w-full h-full object-contain p-2 hover:scale-105 transition-transform duration-500"
-                            referrerPolicy="no-referrer"
+                            refreshKey={assetVersion}
+                            store="sprites"
                           />
                           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-end justify-start p-2 gap-2">
                              <button 
@@ -2121,15 +2447,13 @@ export function AdminPanel({
             >
               <X className="w-6 h-6" />
             </motion.button>
-            <motion.img 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
+            <CachedAsset 
               src={lightboxImage}
               alt="Full Preview"
               className="max-w-full max-h-full object-contain shadow-2xl"
-              referrerPolicy="no-referrer"
+              refreshKey={assetVersion}
               onClick={(e) => e.stopPropagation()}
+              store={lightboxImage?.includes('/sprites/') ? 'sprites' : 'backgrounds'}
             />
           </motion.div>
         )}

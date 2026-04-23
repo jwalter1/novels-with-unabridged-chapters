@@ -1,11 +1,12 @@
 import { db, doc, setDoc, deleteDoc, collection, getDocs, query, handleFirestoreError, OperationType } from '../firebase';
 
 const DB_NAME = 'GreatGatsbyCache';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORES = {
   SPRITES: 'sprites',
   AUDIO: 'audio',
-  BOOKMARKS: 'bookmarks'
+  BOOKMARKS: 'bookmarks',
+  BACKGROUNDS: 'backgrounds'
 };
 
 export interface Bookmark {
@@ -38,6 +39,9 @@ function openDB(): Promise<IDBDatabase> {
         const store = db.createObjectStore(STORES.BOOKMARKS, { keyPath: 'id' });
         store.createIndex('novelId', 'novelId', { unique: false });
       }
+      if (!db.objectStoreNames.contains(STORES.BACKGROUNDS)) {
+        db.createObjectStore(STORES.BACKGROUNDS);
+      }
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -45,7 +49,7 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-export async function getFromCache(store: 'sprites' | 'audio', key: string): Promise<string | null> {
+export async function getFromCache(store: 'sprites' | 'audio' | 'backgrounds', key: string): Promise<any> {
   try {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -60,7 +64,7 @@ export async function getFromCache(store: 'sprites' | 'audio', key: string): Pro
   }
 }
 
-export async function saveToCache(store: 'sprites' | 'audio', key: string, value: string): Promise<void> {
+export async function saveToCache(store: 'sprites' | 'audio' | 'backgrounds', key: string, value: any): Promise<void> {
   try {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -71,6 +75,20 @@ export async function saveToCache(store: 'sprites' | 'audio', key: string, value
     });
   } catch (e) {
     console.error('Cache write error:', e);
+  }
+}
+
+export async function deleteFromCache(store: 'sprites' | 'audio' | 'backgrounds', key: string): Promise<void> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(store, 'readwrite');
+      const request = transaction.objectStore(store).delete(key);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    console.error('Cache delete error:', e);
   }
 }
 
@@ -186,7 +204,7 @@ export async function syncBookmarksFromCloud(uid: string, novelId: string): Prom
   }
 }
 
-export async function clearStore(store: 'sprites' | 'audio'): Promise<void> {
+export async function clearStore(store: 'sprites' | 'audio' | 'backgrounds'): Promise<void> {
   try {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -203,7 +221,7 @@ export async function clearStore(store: 'sprites' | 'audio'): Promise<void> {
 export async function clearNovelFromCache(novelId: string): Promise<void> {
   try {
     const db = await openDB();
-    const stores: ('sprites' | 'audio')[] = ['sprites', 'audio'];
+    const stores: ('sprites' | 'audio' | 'backgrounds')[] = ['sprites', 'audio', 'backgrounds'];
     
     for (const storeName of stores) {
       await new Promise<void>((resolve, reject) => {
@@ -216,9 +234,8 @@ export async function clearNovelFromCache(novelId: string): Promise<void> {
           if (cursor) {
             const key = cursor.key.toString();
             // Check if key starts with novelId: or involves the novelId in some way.
-            // For audio, we use novelId: prefix.
-            // For sprites, we might need a more complex check if keys aren't strictly prefixed.
-            if (key.startsWith(`${novelId}:`)) {
+            // For audio and backgrounds, we use novelId in path usually.
+            if (key.includes(novelId) || key.startsWith(`${novelId}:`)) {
               store.delete(cursor.key);
             }
             cursor.continue();

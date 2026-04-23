@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { X, Check, Sparkles, Loader2, ChevronDown, Edit3, Trash2, RefreshCw } from 'lucide-react';
+import { CachedAsset } from './CachedAsset';
 import { cn } from '@/lib/utils';
 import { generateImage, uploadToS3, uploadMetadata } from '../services/imageService';
 import { loadNovelPromptConfig, loadScenePromptConfig } from '../services/promptsService';
@@ -531,12 +532,12 @@ export function BackgroundSelector({
                   onClick={() => setFullImage(getBustedUrl(url) || '')}
                 >
                   <div className="aspect-video bg-gray-200 relative">
-                    <img 
-                      src={getBustedUrl(url)} 
+                    <CachedAsset 
+                      src={getBustedUrl(url) || ""} 
                       alt="Generated Page" 
                       className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                      onError={(e) => handleImageError(e, selectedScene.id, 'generated')}
+                      refreshKey={imageRefreshKey}
+                      store="backgrounds"
                     />
                     <div className="absolute inset-0 bg-black/20 group-hover:bg-black/10 transition-colors" />
                     {isSelected && (
@@ -594,12 +595,12 @@ export function BackgroundSelector({
                 onClick={() => setFullImage(getBustedUrl(getOriginalBackgroundUrl(selectedScene.background)) || '')}
               >
                 <div className="aspect-video bg-gray-200 relative">
-                <img 
-                  src={getBustedUrl(getOriginalBackgroundUrl(selectedScene.background))} 
+                <CachedAsset 
+                  src={getBustedUrl(getOriginalBackgroundUrl(selectedScene.background)) || ""} 
                   alt="Default" 
                   className="w-full h-full object-cover"
-                  referrerPolicy="no-referrer"
-                  onError={(e) => handleImageError(e, selectedScene.id, 'original')}
+                  refreshKey={imageRefreshKey}
+                  store="backgrounds"
                 />
                 <div className="absolute inset-0 bg-black/20 group-hover:bg-black/10 transition-colors" />
                 {(!currentImageOverride && scope === 'scene') || (!currentPageImageOverride && scope === 'page') ? (
@@ -687,11 +688,13 @@ export function BackgroundSelector({
           className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 cursor-zoom-out"
           onClick={() => setFullImage(null)}
         >
-          <img 
-            src={fullImage || undefined} 
+          <CachedAsset 
+            src={fullImage} 
             alt="Full Preview" 
             className="max-w-full max-h-full object-contain shadow-2xl"
-            referrerPolicy="no-referrer"
+            refreshKey={imageRefreshKey}
+            store="backgrounds"
+            onClick={(e) => e.stopPropagation()}
           />
           <div className="absolute top-4 right-4 flex items-center gap-2">
             <Button 
