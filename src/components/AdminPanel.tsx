@@ -583,17 +583,7 @@ export function AdminPanel({
       chapter.scenes.forEach((scene, sIdx) => {
         scene.dialogue.forEach((dialogue, pIdx) => {
           const pageKey = `${scene.id}_${pIdx}`;
-          
-          const hasOverride = !!pageImageOverrides[pageKey];
-          const hasS3Asset = assets.some(a => {
-            const parts = a.key.split('/');
-            const filename = parts[parts.length - 1];
-            const nameWithoutExt = filename.split('.')[0];
-            const isImage = /\.(png|jpg|jpeg|webp)$/i.test(filename);
-            return isImage && (nameWithoutExt === pageKey || nameWithoutExt.startsWith(`${pageKey}_`));
-          });
-
-          if (!hasOverride && !hasS3Asset) {
+          if (!pageImageOverrides[pageKey]) {
             pagesToGenerate.push({
               scene,
               pIdx,
