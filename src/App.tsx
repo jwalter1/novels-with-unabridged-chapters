@@ -63,6 +63,7 @@ export default function App() {
   const [isGlobalSettingsLoaded, setIsGlobalSettingsLoaded] = useState(false);
   const [selectedNovelId, setSelectedNovelId] = useState<string | null>(null);
   const [assetVersion, setAssetVersion] = useState(Date.now());
+  const [mainImageRefreshKey, setMainImageRefreshKey] = useState(Date.now());
   const [bookVersions, setBookVersions] = useState<Record<string, BookVersion>>(() => {
     const saved = localStorage.getItem('bookVersions');
     return saved ? JSON.parse(saved) : {};
@@ -1987,7 +1988,7 @@ export default function App() {
           )}
         >
           <img 
-            src={getSceneBackground() || undefined} 
+            src={`${getSceneBackground() || ''}${getSceneBackground()?.includes('?') ? '&' : '?'}t=${mainImageRefreshKey}`} 
             alt="Background" 
             className="w-full h-full object-contain opacity-60 grayscale-[0.2]"
             referrerPolicy="no-referrer"
@@ -2003,6 +2004,13 @@ export default function App() {
               target.src = `https://picsum.photos/seed/${currentScene?.id || 'default'}/1920/1080?blur=10`;
             }}
           />
+          <button
+            className="absolute top-4 right-4 bg-white/10 backdrop-blur-md text-white p-2 rounded-full hover:bg-white/20 transition-all z-50"
+            onClick={() => setMainImageRefreshKey(Date.now())}
+            title="Refresh Background"
+          >
+            <RefreshCw className="w-5 h-5" />
+          </button>
           <div className="absolute inset-0 bg-gradient-to-t from-black from-0% via-transparent via-25% to-black/30" />
         </div>
 

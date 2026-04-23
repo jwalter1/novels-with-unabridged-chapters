@@ -1,4 +1,3 @@
-import { db, doc, setDoc, deleteDoc, getDoc, getDocFromServer, handleFirestoreError, OperationType } from '../firebase';
 import { NOVELS_METADATA } from '../data/novels/metadata';
 import { getNovelData } from '../data/bookData';
 
@@ -54,36 +53,49 @@ export function updateProgress(novelId: string, chapterIndex: number, sceneIndex
 
 export async function syncProgressToCloud(uid: string, novelId: string, progress: ProgressData, version?: string) {
   const novelKey = novelId + (version ? `_${version}` : '');
-  const path = `users/${uid}/progress/${novelKey}`;
+  const key = `users/${uid}/progress/${novelKey}.json`;
   try {
     // If progress is empty, delete the document to ensure a true clean state across browsers
     if (Object.keys(progress.sceneProgress).length === 0) {
-      await deleteDoc(doc(db, path));
+      await fetch('/api/s3/delete', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key })
+      });
       return;
     }
 
     // Otherwise, overwrite entirely without merge so deletions/resets propagate
-    await setDoc(doc(db, path), {
+    const jsonStr = JSON.stringify({
       ...progress,
       uid,
       novelId,
       version: version || 'abridged',
       updatedAt: new Date().toISOString()
     });
+    const base64 = btoa(unescape(encodeURIComponent(jsonStr)));
+    
+    await fetch('/api/s3/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key,
+        base64Data: base64,
+        contentType: 'application/json'
+      })
+    });
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+    console.error(`Failed to sync progress for ${novelKey}:`, error);
   }
 }
 
 export async function loadProgressFromCloud(uid: string, novelId: string, version?: string): Promise<ProgressData | null> {
   const novelKey = novelId + (version ? `_${version}` : '');
-  const path = `users/${uid}/progress/${novelKey}`;
+  const key = `users/${uid}/progress/${novelKey}.json`;
   try {
-    const docRef = doc(db, path);
-    // User requested progress to not be cached by Firestore locally
-    const docSnap = await getDocFromServer(docRef);
-    if (docSnap.exists()) {
-      const cloudProgress = docSnap.data() as ProgressData;
+    const res = await fetch(`/api/s3/get?key=${encodeURIComponent(key)}`);
+    if (res.ok) {
+      const cloudProgress = await res.json() as ProgressData;
       
       // We directly overwrite the local cache with the cloud truth
       // to prevent "undeletable" progress that keeps coming back from local maxing
@@ -97,7 +109,7 @@ export async function loadProgressFromCloud(uid: string, novelId: string, versio
       return emptyProgress;
     }
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
+    console.error(`Failed to load progress for ${novelKey}:`, error);
   }
   return null;
 }
